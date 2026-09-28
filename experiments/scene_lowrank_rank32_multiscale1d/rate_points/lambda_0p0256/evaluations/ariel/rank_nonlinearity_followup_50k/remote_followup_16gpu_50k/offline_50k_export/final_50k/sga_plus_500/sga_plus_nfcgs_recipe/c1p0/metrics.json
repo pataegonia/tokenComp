@@ -1,0 +1,1444 @@
+{
+  "aggregate": {
+    "lpips": 0.08801134256646037,
+    "mse": 0.0016619420566712506,
+    "psnr_db": 28.733150323232014,
+    "ssim": 0.9130920097231865
+  },
+  "checkpoint": {
+    "path": "models/globalsplat_feature_codec/checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt",
+    "sha256": "90be09504fa046792dedfe2d1b17e00bb64a5bf95da477d71e233be01df72a42",
+    "source_url": "https://huggingface.co/Roni-It/globalsplat/resolve/main/globalsplat-re10k-32k.ckpt"
+  },
+  "codec": {
+    "actual_rans": true,
+    "all_scene_decoder_state_counted": true,
+    "base_score_rate_surrogate": "fixed_q8_cdf_local_straight_through",
+    "entropy_model": "mean-scale hyperprior (morton1d)",
+    "factor_bits": 8,
+    "itt_base_quantization": "score_q8_and_mean_fp16_ste",
+    "itt_learning_rate": 0.002,
+    "itt_learning_rates": {
+      "mean": 0.001,
+      "residual_y": 0.02,
+      "residual_z": 0.005,
+      "score": 0.02
+    },
+    "itt_lr_gamma": 0.1,
+    "itt_lr_milestones": [],
+    "itt_lr_schedule": "warmup_cosine",
+    "itt_lr_schedule_horizon": 500,
+    "itt_optimizer": {
+      "beta1": 0.9,
+      "beta2": 0.999,
+      "eps": 1e-08,
+      "name": "Adam"
+    },
+    "itt_quantization": "sga_plus",
+    "itt_sga_plus_scope": [
+      "residual_y",
+      "residual_z"
+    ],
+    "itt_sga_plus_temperature": {
+      "anneal_rate": 0.001,
+      "initial": 1.0,
+      "minimum": 0.0001
+    },
+    "lowrank_rank": 32,
+    "optimized_scene_state": [
+      "lowrank_scores",
+      "lowrank_mean",
+      "residual_y",
+      "residual_z"
+    ],
+    "rate_weight_during_scene_adaptation": 0.0256,
+    "reported_metric_source": "actual combined-bitstream receiver decode",
+    "scene_lowrank_basis_frozen": true,
+    "scene_lowrank_scores_mean_frozen": false,
+    "target_oracle_diagnostic": false
+  },
+  "decoder_side_image_or_token_leak": false,
+  "environment": {
+    "cuda_runtime": "12.1",
+    "device": "cuda",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "hostname": "ariel-g1",
+    "python": "3.10.20",
+    "seed": 111123,
+    "torch": "2.5.1+cu121"
+  },
+  "generated_at": "2026-08-20T14:12:59.970717+09:00",
+  "method": "globalsplat_32k_lic_friendly_rendering_aware_hyperprior",
+  "model": {
+    "gaussians_per_scene": 32768,
+    "geometry_representation": "decoder_observable_512plus224",
+    "globalsplat_frozen": true,
+    "learned_transform_kind": "lic_friendly",
+    "learned_transform_layout": "morton1d",
+    "learned_transform_variant": "multiscale1d",
+    "official_variant": "globalsplat-re10k-32k",
+    "ordering": "decoded_token_center_morton3d_10bit",
+    "shared_hyperprior_frozen": true
+  },
+  "protocol": {
+    "context_target_disjoint": true,
+    "context_views": 8,
+    "dataset": "RE10K test Primary3",
+    "fixed_optimizer_updates": 500,
+    "image_shape": [
+      256,
+      256
+    ],
+    "state_selection": "fixed_final",
+    "target_in_loss_or_backward": false,
+    "target_no_grad_state_selection": false,
+    "target_views": 8
+  },
+  "rate": {
+    "mean_bits_per_gaussian_attribute": 0.5639772576800848,
+    "mean_bytes_per_scene": 136293.0,
+    "mean_mib_per_scene": 0.12997913360595703
+  },
+  "rate_gradient_contract": {
+    "direct_symbol_rate_gradients_verified": true,
+    "excluded_rate_constant_state": [
+      "lowrank_mean_fp16",
+      "scene_lowrank_basis_q8",
+      "container_headers"
+    ],
+    "final_report_uses_hard_symbols": true,
+    "hard_forward_symbols": false,
+    "id": "scene_residual_sga_plus_likelihood.v1",
+    "implementation_sha256": {
+      "evaluator": "8a47b5cb391e85a2a5d723f25a3e25cef55b472e89ebc9142504217a4caa252f",
+      "lowrank_base_rate": "3349b7a0488b5ce09abc7270de51883882a353294b07b1b1b71020b6e368f8e8",
+      "residual_entropy_model": "eb564082040b06b46b0f1d24dae3f8ba9876f9517a56207d06191a19ed8755a8"
+    },
+    "scene_audits_passed": true
+  },
+  "receiver_subprocess": true,
+  "scenes": [
+    {
+      "adaptation": {
+        "codec_initialization_seconds": 0.4373199581168592,
+        "feature_extraction_seconds_excluded": 0.27232878329232335,
+        "max_surrogate_decode_error": 0.0,
+        "optimization_and_selection_seconds": 39.57555105909705,
+        "oracle_trace": [],
+        "peak_allocated_bytes": 2835551232,
+        "peak_reserved_bytes": 2875195392,
+        "rate_gradient_audit": {
+          "contract_id": "scene_residual_sga_plus_likelihood.v1",
+          "excluded_fields": {
+            "lowrank_mean": "fixed-size FP16 payload; rate is value-independent",
+            "scene_lowrank_basis": "fixed during ITT; fixed-size q8 payload"
+          },
+          "fields": {
+            "lowrank_scores": {
+              "finite": true,
+              "max_abs_gradient": 292.9944763183594,
+              "nonzero_gradient_scalars": 130574,
+              "scalars": 131072,
+              "status": "PASS"
+            },
+            "residual_y": {
+              "finite": true,
+              "max_abs_gradient": 1295.3294677734375,
+              "nonzero_gradient_scalars": 323856,
+              "scalars": 327680,
+              "status": "PASS"
+            },
+            "residual_z": {
+              "finite": true,
+              "max_abs_gradient": 1140.7685546875,
+              "nonzero_gradient_scalars": 45884,
+              "scalars": 49152,
+              "status": "PASS"
+            }
+          },
+          "status": "PASS"
+        },
+        "receiver_subprocess_seconds": 11.170087526086718,
+        "reported_checkpoints": {},
+        "selected_target_psnr_db": null,
+        "selected_updates": 500,
+        "total_codec_seconds": 40.01287101721391,
+        "trace": [
+          {
+            "estimated_total_bpga": 0.6023339629173279,
+            "lpips": 0.13783487677574158,
+            "mse": 0.0010260422714054585,
+            "total": 0.023337535560131073,
+            "updates": 0
+          },
+          {
+            "estimated_total_bpga": 0.5935538411140442,
+            "lpips": 0.10278993099927902,
+            "mse": 0.0010430584661662579,
+            "total": 0.021377533674240112,
+            "updates": 25
+          },
+          {
+            "estimated_total_bpga": 0.5854762196540833,
+            "lpips": 0.09583085775375366,
+            "mse": 0.000977788120508194,
+            "total": 0.0207575224339962,
+            "updates": 50
+          },
+          {
+            "estimated_total_bpga": 0.5795073509216309,
+            "lpips": 0.09336473047733307,
+            "mse": 0.0009444438619539142,
+            "total": 0.020448068156838417,
+            "updates": 75
+          },
+          {
+            "estimated_total_bpga": 0.5751769542694092,
+            "lpips": 0.08562050014734268,
+            "mse": 0.0009145415388047695,
+            "total": 0.019920095801353455,
+            "updates": 100
+          },
+          {
+            "estimated_total_bpga": 0.5718008875846863,
+            "lpips": 0.0845320075750351,
+            "mse": 0.0009052505483850837,
+            "total": 0.019769953563809395,
+            "updates": 125
+          },
+          {
+            "estimated_total_bpga": 0.5690749883651733,
+            "lpips": 0.08314253389835358,
+            "mse": 0.0009123253403231502,
+            "total": 0.01963777095079422,
+            "updates": 150
+          },
+          {
+            "estimated_total_bpga": 0.5666603446006775,
+            "lpips": 0.0797630101442337,
+            "mse": 0.0008715933072380722,
+            "total": 0.019366249442100525,
+            "updates": 175
+          },
+          {
+            "estimated_total_bpga": 0.5645840167999268,
+            "lpips": 0.07647363096475601,
+            "mse": 0.0007902806391939521,
+            "total": 0.01906731352210045,
+            "updates": 200
+          },
+          {
+            "estimated_total_bpga": 0.5627589225769043,
+            "lpips": 0.07579098641872406,
+            "mse": 0.0008198797004297376,
+            "total": 0.01901605725288391,
+            "updates": 225
+          },
+          {
+            "estimated_total_bpga": 0.5612932443618774,
+            "lpips": 0.07304605096578598,
+            "mse": 0.0007805952336639166,
+            "total": 0.018802005797624588,
+            "updates": 250
+          },
+          {
+            "estimated_total_bpga": 0.5600743889808655,
+            "lpips": 0.0718364417552948,
+            "mse": 0.0007490330608561635,
+            "total": 0.018678758293390274,
+            "updates": 275
+          },
+          {
+            "estimated_total_bpga": 0.5591251850128174,
+            "lpips": 0.06790053099393845,
+            "mse": 0.000698865158483386,
+            "total": 0.01840749755501747,
+            "updates": 300
+          },
+          {
+            "estimated_total_bpga": 0.5583112239837646,
+            "lpips": 0.06612003594636917,
+            "mse": 0.0006503299809992313,
+            "total": 0.01824909821152687,
+            "updates": 325
+          },
+          {
+            "estimated_total_bpga": 0.5576199293136597,
+            "lpips": 0.06341245770454407,
+            "mse": 0.000607060850597918,
+            "total": 0.018052753061056137,
+            "updates": 350
+          },
+          {
+            "estimated_total_bpga": 0.5570778250694275,
+            "lpips": 0.06147444620728493,
+            "mse": 0.0005770591087639332,
+            "total": 0.017911972478032112,
+            "updates": 375
+          },
+          {
+            "estimated_total_bpga": 0.5565877556800842,
+            "lpips": 0.06017542630434036,
+            "mse": 0.00057630380615592,
+            "total": 0.01783372089266777,
+            "updates": 400
+          },
+          {
+            "estimated_total_bpga": 0.5562157034873962,
+            "lpips": 0.05983256176114082,
+            "mse": 0.0005706193624064326,
+            "total": 0.017801368609070778,
+            "updates": 425
+          },
+          {
+            "estimated_total_bpga": 0.5559973120689392,
+            "lpips": 0.05841046944260597,
+            "mse": 0.0005479902611114085,
+            "total": 0.017702044919133186,
+            "updates": 450
+          },
+          {
+            "estimated_total_bpga": 0.5558096170425415,
+            "lpips": 0.05778510496020317,
+            "mse": 0.0005324590019881725,
+            "total": 0.017650440335273743,
+            "updates": 475
+          },
+          {
+            "estimated_total_bpga": 0.5556977391242981,
+            "lpips": 0.05726965144276619,
+            "mse": 0.000533109123352915,
+            "total": 0.017622454091906548,
+            "updates": 500
+          }
+        ],
+        "trainable_parameters": 508640
+      },
+      "bitstream": {
+        "bytes": 134462,
+        "headers": {
+          "base": {
+            "cdf_sha256": "2246b1d67f44f1b01aabc3a53baa30c391226318ab5e33b6689f057807002849",
+            "cdf_transmitted_per_scene": false,
+            "format": "M3OBBASE observable q8 low-rank base",
+            "geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+            "metadata_coder": "zlib level 9",
+            "stream_bytes": {
+              "basis_q8": 16368,
+              "container": 117926,
+              "metadata": 1814,
+              "score_q8": 99712
+            },
+            "symbol_coder": "CompressAI rANS"
+          },
+          "combined": {
+            "base_bytes": 117926,
+            "container_bytes": 134462,
+            "format": "M3HPCODE",
+            "residual_bytes": 16504
+          },
+          "receiver_component_errors": {
+            "base_observable_max_abs": 0.0,
+            "residual_observable_max_abs": 0.0
+          },
+          "residual": {
+            "container_bytes": 16504,
+            "format": "M3HPRANS mean-scale hyperprior",
+            "model_fingerprint": "f6e0c26b0759b5b8ad949218dc7b91ccd567c8b027c1a01e25d469cc061fbea8",
+            "rans_bytes": 16424
+          }
+        },
+        "path": "/ceph_data/jihyoun0403/vml/NFC-GS-Hybrid-Optimization-artifacts/remote-followup16/results/remote_followup_16gpu_50k/scene_lowrank_rank32_multiscale1d/lambda_0p0256/final_50k/sga_plus_500/sga_plus_nfcgs_recipe/c1p0/bitstreams/good_3d410da4d7fd9f64.m3hp",
+        "sha256": "71b065c6f1c8dad232f4888e311aaba90df63c789f0d7fab5af6689e880c6de1"
+      },
+      "context": {
+        "lpips": 0.05726132541894913,
+        "mse": 0.0005326023092493415,
+        "per_view": [
+          {
+            "frame": 0,
+            "lpips": 0.06925596296787262,
+            "mse": 0.0009379236726090312,
+            "psnr_db": 30.278324127197266,
+            "ssim": 0.924496591091156
+          },
+          {
+            "frame": 22,
+            "lpips": 0.060318369418382645,
+            "mse": 0.0006860922439955175,
+            "psnr_db": 31.63617706298828,
+            "ssim": 0.9474484324455261
+          },
+          {
+            "frame": 31,
+            "lpips": 0.055993787944316864,
+            "mse": 0.000598365324549377,
+            "psnr_db": 32.2303352355957,
+            "ssim": 0.9543022513389587
+          },
+          {
+            "frame": 39,
+            "lpips": 0.05711549147963524,
+            "mse": 0.00047338748117908835,
+            "psnr_db": 33.247833251953125,
+            "ssim": 0.9598655700683594
+          },
+          {
+            "frame": 47,
+            "lpips": 0.05513614043593407,
+            "mse": 0.0004471572465263307,
+            "psnr_db": 33.495399475097656,
+            "ssim": 0.9642617106437683
+          },
+          {
+            "frame": 56,
+            "lpips": 0.052950721234083176,
+            "mse": 0.000508919358253479,
+            "psnr_db": 32.933509826660156,
+            "ssim": 0.9692723751068115
+          },
+          {
+            "frame": 66,
+            "lpips": 0.0529385581612587,
+            "mse": 0.0002618482685647905,
+            "psnr_db": 35.81950378417969,
+            "ssim": 0.9750113487243652
+          },
+          {
+            "frame": 75,
+            "lpips": 0.05438157916069031,
+            "mse": 0.00034712470369413495,
+            "psnr_db": 34.59514617919922,
+            "ssim": 0.9753456115722656
+          }
+        ],
+        "psnr_db": 33.0295295715332,
+        "ssim": 0.9587504863739014
+      },
+      "context_frames": [
+        0,
+        22,
+        31,
+        39,
+        47,
+        56,
+        66,
+        75
+      ],
+      "difficulty": "good",
+      "receiver_camera_query_contains_target_rgb": false,
+      "receiver_cross_process": {
+        "atol": 1e-07,
+        "decoded_base_shape": [
+          4096,
+          736
+        ],
+        "decoded_residual_shape": [
+          4096,
+          736
+        ],
+        "receiver_audit": {
+          "bitstream_sha256": "71b065c6f1c8dad232f4888e311aaba90df63c789f0d7fab5af6689e880c6de1",
+          "codec_checkpoint_sha256": "50ef16b63909c556584c07835ca842c1d71b61c807693314bd6c1143391eb05a",
+          "encoded_geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+          "geometry_sha256": "cb19e5f34a1a1b18389d7e07ecc03d50e37119345b9ddd22c8f8a2b8fa897a2f",
+          "official_checkpoint_sha256": "90be09504fa046792dedfe2d1b17e00bb64a5bf95da477d71e233be01df72a42",
+          "runtime_basis_matches_encoded_bytes": false,
+          "runtime_geometry_basis_sha256": "caa9e6398e0658459ed68df393cbf03b7d1c8220a3501599b5abb8fb116ebbc1",
+          "texture_sha256": "061155cab66b92dbdc0adc02b49f599eba86d65258bdbaed852e559dd26415ad"
+        },
+        "rtol": 1e-06,
+        "synthesis_allclose": {
+          "geometry_tokens": true,
+          "means": true,
+          "opacities": true,
+          "reg": true,
+          "rotations": true,
+          "scales": true,
+          "sh": true,
+          "texture_tokens": true
+        },
+        "synthesis_max_abs_error": {
+          "geometry_tokens": 0.0,
+          "means": 0.0,
+          "opacities": 0.0,
+          "reg": 0.0,
+          "rotations": 0.0,
+          "scales": 0.0,
+          "sh": 0.0,
+          "texture_tokens": 0.0
+        },
+        "target_rendered_in_receiver": true
+      },
+      "receiver_inputs": [
+        "official_globalsplat_checkpoint",
+        "shared_codec_checkpoint",
+        "scene_bitstream",
+        "target_cameras_without_rgb"
+      ],
+      "receiver_subprocess": true,
+      "scene": "3d410da4d7fd9f64",
+      "target": {
+        "lpips": 0.07424630224704742,
+        "mse": 0.0006534190033562481,
+        "per_view": [
+          {
+            "frame": 1,
+            "lpips": 0.07747570425271988,
+            "mse": 0.0009430851205252111,
+            "psnr_db": 30.25448989868164,
+            "ssim": 0.9245230555534363
+          },
+          {
+            "frame": 9,
+            "lpips": 0.08643930405378342,
+            "mse": 0.0009034263784997165,
+            "psnr_db": 30.441072463989258,
+            "ssim": 0.9288268089294434
+          },
+          {
+            "frame": 17,
+            "lpips": 0.08924861252307892,
+            "mse": 0.0008334961603395641,
+            "psnr_db": 30.790966033935547,
+            "ssim": 0.9343221187591553
+          },
+          {
+            "frame": 26,
+            "lpips": 0.06607451289892197,
+            "mse": 0.0006341467378661036,
+            "psnr_db": 31.978103637695312,
+            "ssim": 0.9516242146492004
+          },
+          {
+            "frame": 35,
+            "lpips": 0.0671873688697815,
+            "mse": 0.000557615770958364,
+            "psnr_db": 32.536651611328125,
+            "ssim": 0.9568011164665222
+          },
+          {
+            "frame": 44,
+            "lpips": 0.06996165215969086,
+            "mse": 0.00048298342153429985,
+            "psnr_db": 33.160675048828125,
+            "ssim": 0.959381639957428
+          },
+          {
+            "frame": 53,
+            "lpips": 0.06841875612735748,
+            "mse": 0.0005388825084082782,
+            "psnr_db": 32.68505859375,
+            "ssim": 0.9658570885658264
+          },
+          {
+            "frame": 62,
+            "lpips": 0.06916451454162598,
+            "mse": 0.00033371621975675225,
+            "psnr_db": 34.76622772216797,
+            "ssim": 0.972035825252533
+          }
+        ],
+        "psnr_db": 32.076656341552734,
+        "ssim": 0.9491714835166931
+      },
+      "target_frames": [
+        1,
+        9,
+        17,
+        26,
+        35,
+        44,
+        53,
+        62
+      ],
+      "target_used_for_gradient": false,
+      "target_used_for_selection": false
+    },
+    {
+      "adaptation": {
+        "codec_initialization_seconds": 0.07356446469202638,
+        "feature_extraction_seconds_excluded": 0.20622860826551914,
+        "max_surrogate_decode_error": 0.0,
+        "optimization_and_selection_seconds": 38.54776468593627,
+        "oracle_trace": [],
+        "peak_allocated_bytes": 2925129216,
+        "peak_reserved_bytes": 2963275776,
+        "rate_gradient_audit": {
+          "contract_id": "scene_residual_sga_plus_likelihood.v1",
+          "excluded_fields": {
+            "lowrank_mean": "fixed-size FP16 payload; rate is value-independent",
+            "scene_lowrank_basis": "fixed during ITT; fixed-size q8 payload"
+          },
+          "fields": {
+            "lowrank_scores": {
+              "finite": true,
+              "max_abs_gradient": 249.41659545898438,
+              "nonzero_gradient_scalars": 130765,
+              "scalars": 131072,
+              "status": "PASS"
+            },
+            "residual_y": {
+              "finite": true,
+              "max_abs_gradient": 1201.593505859375,
+              "nonzero_gradient_scalars": 324187,
+              "scalars": 327680,
+              "status": "PASS"
+            },
+            "residual_z": {
+              "finite": true,
+              "max_abs_gradient": 1733.4979248046875,
+              "nonzero_gradient_scalars": 46163,
+              "scalars": 49152,
+              "status": "PASS"
+            }
+          },
+          "status": "PASS"
+        },
+        "receiver_subprocess_seconds": 11.265858646016568,
+        "reported_checkpoints": {},
+        "selected_target_psnr_db": null,
+        "selected_updates": 500,
+        "total_codec_seconds": 38.6213291506283,
+        "trace": [
+          {
+            "estimated_total_bpga": 0.5993810296058655,
+            "lpips": 0.13829287886619568,
+            "mse": 0.0023932927288115025,
+            "total": 0.024652089923620224,
+            "updates": 0
+          },
+          {
+            "estimated_total_bpga": 0.5926315784454346,
+            "lpips": 0.10994049906730652,
+            "mse": 0.0020754027646034956,
+            "total": 0.022743795067071915,
+            "updates": 25
+          },
+          {
+            "estimated_total_bpga": 0.5866111516952515,
+            "lpips": 0.09794493019580841,
+            "mse": 0.0018642132636159658,
+            "total": 0.021778704598546028,
+            "updates": 50
+          },
+          {
+            "estimated_total_bpga": 0.5820386409759521,
+            "lpips": 0.09181413054466248,
+            "mse": 0.0017358623445034027,
+            "total": 0.021226758137345314,
+            "updates": 75
+          },
+          {
+            "estimated_total_bpga": 0.5783722400665283,
+            "lpips": 0.09168285876512527,
+            "mse": 0.0016882912022992969,
+            "total": 0.021078763529658318,
+            "updates": 100
+          },
+          {
+            "estimated_total_bpga": 0.5755464434623718,
+            "lpips": 0.08725107461214066,
+            "mse": 0.0016057261964306235,
+            "total": 0.020702268928289413,
+            "updates": 125
+          },
+          {
+            "estimated_total_bpga": 0.5729542374610901,
+            "lpips": 0.0834999680519104,
+            "mse": 0.0015229545533657074,
+            "total": 0.020365580916404724,
+            "updates": 150
+          },
+          {
+            "estimated_total_bpga": 0.5710203647613525,
+            "lpips": 0.08058749884366989,
+            "mse": 0.0014904034323990345,
+            "total": 0.02013789862394333,
+            "updates": 175
+          },
+          {
+            "estimated_total_bpga": 0.5692657828330994,
+            "lpips": 0.0780332162976265,
+            "mse": 0.0014677708968520164,
+            "total": 0.0199426356703043,
+            "updates": 200
+          },
+          {
+            "estimated_total_bpga": 0.5676652193069458,
+            "lpips": 0.07516063749790192,
+            "mse": 0.0013897307217121124,
+            "total": 0.019679991528391838,
+            "updates": 225
+          },
+          {
+            "estimated_total_bpga": 0.566415548324585,
+            "lpips": 0.07156196981668472,
+            "mse": 0.001302387798205018,
+            "total": 0.0193807240575552,
+            "updates": 250
+          },
+          {
+            "estimated_total_bpga": 0.5652796626091003,
+            "lpips": 0.06832600384950638,
+            "mse": 0.0012252324959263206,
+            "total": 0.019112691283226013,
+            "updates": 275
+          },
+          {
+            "estimated_total_bpga": 0.5644137263298035,
+            "lpips": 0.06792977452278137,
+            "mse": 0.001188273774459958,
+            "total": 0.019033752381801605,
+            "updates": 300
+          },
+          {
+            "estimated_total_bpga": 0.5637598037719727,
+            "lpips": 0.06586238741874695,
+            "mse": 0.0012029740028083324,
+            "total": 0.018928343430161476,
+            "updates": 325
+          },
+          {
+            "estimated_total_bpga": 0.5631416440010071,
+            "lpips": 0.06349630653858185,
+            "mse": 0.0011419750517234206,
+            "total": 0.01873321644961834,
+            "updates": 350
+          },
+          {
+            "estimated_total_bpga": 0.5627119541168213,
+            "lpips": 0.062322910875082016,
+            "mse": 0.001110772485844791,
+            "total": 0.018632343038916588,
+            "updates": 375
+          },
+          {
+            "estimated_total_bpga": 0.5623992681503296,
+            "lpips": 0.06053302437067032,
+            "mse": 0.0010606534779071808,
+            "total": 0.018484726548194885,
+            "updates": 400
+          },
+          {
+            "estimated_total_bpga": 0.5621113777160645,
+            "lpips": 0.059024274349212646,
+            "mse": 0.001043766736984253,
+            "total": 0.018385032191872597,
+            "updates": 425
+          },
+          {
+            "estimated_total_bpga": 0.561916172504425,
+            "lpips": 0.059042155742645264,
+            "mse": 0.0010486721294000745,
+            "total": 0.018385834991931915,
+            "updates": 450
+          },
+          {
+            "estimated_total_bpga": 0.5617648363113403,
+            "lpips": 0.057867445051670074,
+            "mse": 0.001043093972839415,
+            "total": 0.01831764541566372,
+            "updates": 475
+          },
+          {
+            "estimated_total_bpga": 0.561680018901825,
+            "lpips": 0.05731240287423134,
+            "mse": 0.0010059259366244078,
+            "total": 0.01825055480003357,
+            "updates": 500
+          }
+        ],
+        "trainable_parameters": 508640
+      },
+      "bitstream": {
+        "bytes": 135874,
+        "headers": {
+          "base": {
+            "cdf_sha256": "2246b1d67f44f1b01aabc3a53baa30c391226318ab5e33b6689f057807002849",
+            "cdf_transmitted_per_scene": false,
+            "format": "M3OBBASE observable q8 low-rank base",
+            "geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+            "metadata_coder": "zlib level 9",
+            "stream_bytes": {
+              "basis_q8": 16620,
+              "container": 117250,
+              "metadata": 1814,
+              "score_q8": 98784
+            },
+            "symbol_coder": "CompressAI rANS"
+          },
+          "combined": {
+            "base_bytes": 117250,
+            "container_bytes": 135874,
+            "format": "M3HPCODE",
+            "residual_bytes": 18592
+          },
+          "receiver_component_errors": {
+            "base_observable_max_abs": 0.0,
+            "residual_observable_max_abs": 0.0
+          },
+          "residual": {
+            "container_bytes": 18592,
+            "format": "M3HPRANS mean-scale hyperprior",
+            "model_fingerprint": "f6e0c26b0759b5b8ad949218dc7b91ccd567c8b027c1a01e25d469cc061fbea8",
+            "rans_bytes": 18512
+          }
+        },
+        "path": "/ceph_data/jihyoun0403/vml/NFC-GS-Hybrid-Optimization-artifacts/remote-followup16/results/remote_followup_16gpu_50k/scene_lowrank_rank32_multiscale1d/lambda_0p0256/final_50k/sga_plus_500/sga_plus_nfcgs_recipe/c1p0/bitstreams/middle_60c02c2807193b6e.m3hp",
+        "sha256": "e2b25617c7d30ac2c980a75ca43ec1717e650d7d84cbe3dacb8317636d4fa3b4"
+      },
+      "context": {
+        "lpips": 0.057044196873903275,
+        "mse": 0.0009983750060200691,
+        "per_view": [
+          {
+            "frame": 0,
+            "lpips": 0.04949217662215233,
+            "mse": 0.0007402176852338016,
+            "psnr_db": 31.30640411376953,
+            "ssim": 0.9477157592773438
+          },
+          {
+            "frame": 9,
+            "lpips": 0.04804307967424393,
+            "mse": 0.0008430249872617424,
+            "psnr_db": 30.741596221923828,
+            "ssim": 0.9496209025382996
+          },
+          {
+            "frame": 18,
+            "lpips": 0.05014583840966225,
+            "mse": 0.0008013807237148285,
+            "psnr_db": 30.961610794067383,
+            "ssim": 0.9473421573638916
+          },
+          {
+            "frame": 27,
+            "lpips": 0.05485779419541359,
+            "mse": 0.001011768588796258,
+            "psnr_db": 29.949188232421875,
+            "ssim": 0.9427034854888916
+          },
+          {
+            "frame": 35,
+            "lpips": 0.058949969708919525,
+            "mse": 0.0010882397182285786,
+            "psnr_db": 29.63275718688965,
+            "ssim": 0.9379416108131409
+          },
+          {
+            "frame": 44,
+            "lpips": 0.06441213935613632,
+            "mse": 0.0011333217844367027,
+            "psnr_db": 29.456466674804688,
+            "ssim": 0.9331079125404358
+          },
+          {
+            "frame": 53,
+            "lpips": 0.0638294517993927,
+            "mse": 0.0011390517465770245,
+            "psnr_db": 29.434566497802734,
+            "ssim": 0.9301530718803406
+          },
+          {
+            "frame": 69,
+            "lpips": 0.06662315875291824,
+            "mse": 0.0012299955124035478,
+            "psnr_db": 29.100963592529297,
+            "ssim": 0.9186801910400391
+          }
+        ],
+        "psnr_db": 30.07294464111328,
+        "ssim": 0.9384081363677979
+      },
+      "context_frames": [
+        0,
+        9,
+        18,
+        27,
+        35,
+        44,
+        53,
+        69
+      ],
+      "difficulty": "middle",
+      "receiver_camera_query_contains_target_rgb": false,
+      "receiver_cross_process": {
+        "atol": 1e-07,
+        "decoded_base_shape": [
+          4096,
+          736
+        ],
+        "decoded_residual_shape": [
+          4096,
+          736
+        ],
+        "receiver_audit": {
+          "bitstream_sha256": "e2b25617c7d30ac2c980a75ca43ec1717e650d7d84cbe3dacb8317636d4fa3b4",
+          "codec_checkpoint_sha256": "50ef16b63909c556584c07835ca842c1d71b61c807693314bd6c1143391eb05a",
+          "encoded_geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+          "geometry_sha256": "b8c092c8d2073b46f01e2d7308e3618ddedcf8a41a58924f46d3d710a95b42fa",
+          "official_checkpoint_sha256": "90be09504fa046792dedfe2d1b17e00bb64a5bf95da477d71e233be01df72a42",
+          "runtime_basis_matches_encoded_bytes": false,
+          "runtime_geometry_basis_sha256": "caa9e6398e0658459ed68df393cbf03b7d1c8220a3501599b5abb8fb116ebbc1",
+          "texture_sha256": "75544bd62a74b207d155fe90e2d002195e76718e3ac78827a289a3d6f0e42c9a"
+        },
+        "rtol": 1e-06,
+        "synthesis_allclose": {
+          "geometry_tokens": true,
+          "means": true,
+          "opacities": true,
+          "reg": true,
+          "rotations": true,
+          "scales": true,
+          "sh": true,
+          "texture_tokens": true
+        },
+        "synthesis_max_abs_error": {
+          "geometry_tokens": 0.0,
+          "means": 0.0,
+          "opacities": 0.0,
+          "reg": 0.0,
+          "rotations": 0.0,
+          "scales": 0.0,
+          "sh": 0.0,
+          "texture_tokens": 0.0
+        },
+        "target_rendered_in_receiver": true
+      },
+      "receiver_inputs": [
+        "official_globalsplat_checkpoint",
+        "shared_codec_checkpoint",
+        "scene_bitstream",
+        "target_cameras_without_rgb"
+      ],
+      "receiver_subprocess": true,
+      "scene": "60c02c2807193b6e",
+      "target": {
+        "lpips": 0.07081297785043716,
+        "mse": 0.0014910850441083312,
+        "per_view": [
+          {
+            "frame": 1,
+            "lpips": 0.059498436748981476,
+            "mse": 0.0008757662726566195,
+            "psnr_db": 30.57611846923828,
+            "ssim": 0.94521564245224
+          },
+          {
+            "frame": 8,
+            "lpips": 0.05568208172917366,
+            "mse": 0.001003601006232202,
+            "psnr_db": 29.984390258789062,
+            "ssim": 0.9463951587677002
+          },
+          {
+            "frame": 16,
+            "lpips": 0.06038539856672287,
+            "mse": 0.001281330711208284,
+            "psnr_db": 28.923389434814453,
+            "ssim": 0.9417624473571777
+          },
+          {
+            "frame": 24,
+            "lpips": 0.0687611997127533,
+            "mse": 0.0015016712713986635,
+            "psnr_db": 28.2342529296875,
+            "ssim": 0.9375395178794861
+          },
+          {
+            "frame": 32,
+            "lpips": 0.07424266636371613,
+            "mse": 0.0015682384837418795,
+            "psnr_db": 28.045881271362305,
+            "ssim": 0.935002326965332
+          },
+          {
+            "frame": 40,
+            "lpips": 0.09122411906719208,
+            "mse": 0.0018788691377267241,
+            "psnr_db": 27.261035919189453,
+            "ssim": 0.9228664040565491
+          },
+          {
+            "frame": 48,
+            "lpips": 0.07550501078367233,
+            "mse": 0.0018066472839564085,
+            "psnr_db": 27.43126678466797,
+            "ssim": 0.926171600818634
+          },
+          {
+            "frame": 56,
+            "lpips": 0.08120491355657578,
+            "mse": 0.002012555953115225,
+            "psnr_db": 26.962520599365234,
+            "ssim": 0.9193937182426453
+          }
+        ],
+        "psnr_db": 28.427356719970703,
+        "ssim": 0.9342933893203735
+      },
+      "target_frames": [
+        1,
+        8,
+        16,
+        24,
+        32,
+        40,
+        48,
+        56
+      ],
+      "target_used_for_gradient": false,
+      "target_used_for_selection": false
+    },
+    {
+      "adaptation": {
+        "codec_initialization_seconds": 0.06839465117082,
+        "feature_extraction_seconds_excluded": 0.20440379390493035,
+        "max_surrogate_decode_error": 0.0,
+        "optimization_and_selection_seconds": 37.9009357271716,
+        "oracle_trace": [],
+        "peak_allocated_bytes": 2912522240,
+        "peak_reserved_bytes": 2942304256,
+        "rate_gradient_audit": {
+          "contract_id": "scene_residual_sga_plus_likelihood.v1",
+          "excluded_fields": {
+            "lowrank_mean": "fixed-size FP16 payload; rate is value-independent",
+            "scene_lowrank_basis": "fixed during ITT; fixed-size q8 payload"
+          },
+          "fields": {
+            "lowrank_scores": {
+              "finite": true,
+              "max_abs_gradient": 253.257568359375,
+              "nonzero_gradient_scalars": 130787,
+              "scalars": 131072,
+              "status": "PASS"
+            },
+            "residual_y": {
+              "finite": true,
+              "max_abs_gradient": 1063.87109375,
+              "nonzero_gradient_scalars": 324337,
+              "scalars": 327680,
+              "status": "PASS"
+            },
+            "residual_z": {
+              "finite": true,
+              "max_abs_gradient": 3324.89599609375,
+              "nonzero_gradient_scalars": 46773,
+              "scalars": 49152,
+              "status": "PASS"
+            }
+          },
+          "status": "PASS"
+        },
+        "receiver_subprocess_seconds": 11.270758071914315,
+        "reported_checkpoints": {},
+        "selected_target_psnr_db": null,
+        "selected_updates": 500,
+        "total_codec_seconds": 37.96933037834242,
+        "trace": [
+          {
+            "estimated_total_bpga": 0.6053769588470459,
+            "lpips": 0.22342482209205627,
+            "mse": 0.005245093256235123,
+            "total": 0.031913984566926956,
+            "updates": 0
+          },
+          {
+            "estimated_total_bpga": 0.6007455587387085,
+            "lpips": 0.1700390875339508,
+            "mse": 0.004157803952693939,
+            "total": 0.02803884446620941,
+            "updates": 25
+          },
+          {
+            "estimated_total_bpga": 0.5959761142730713,
+            "lpips": 0.14687369763851166,
+            "mse": 0.003525991691276431,
+            "total": 0.026126664131879807,
+            "updates": 50
+          },
+          {
+            "estimated_total_bpga": 0.591772198677063,
+            "lpips": 0.137878879904747,
+            "mse": 0.003325111698359251,
+            "total": 0.025368424132466316,
+            "updates": 75
+          },
+          {
+            "estimated_total_bpga": 0.588576078414917,
+            "lpips": 0.1358097493648529,
+            "mse": 0.0033448529429733753,
+            "total": 0.025202888995409012,
+            "updates": 100
+          },
+          {
+            "estimated_total_bpga": 0.586129903793335,
+            "lpips": 0.12988632917404175,
+            "mse": 0.003151865443214774,
+            "total": 0.02465110644698143,
+            "updates": 125
+          },
+          {
+            "estimated_total_bpga": 0.5837267637252808,
+            "lpips": 0.12556475400924683,
+            "mse": 0.0030332296155393124,
+            "total": 0.024254873394966125,
+            "updates": 150
+          },
+          {
+            "estimated_total_bpga": 0.5817506313323975,
+            "lpips": 0.12265478819608688,
+            "mse": 0.0031099431216716766,
+            "total": 0.024135498329997063,
+            "updates": 175
+          },
+          {
+            "estimated_total_bpga": 0.5801432728767395,
+            "lpips": 0.11866486072540283,
+            "mse": 0.003096154425293207,
+            "total": 0.023881064727902412,
+            "updates": 200
+          },
+          {
+            "estimated_total_bpga": 0.5786351561546326,
+            "lpips": 0.11375989764928818,
+            "mse": 0.002929506590589881,
+            "total": 0.023430561646819115,
+            "updates": 225
+          },
+          {
+            "estimated_total_bpga": 0.5775029063224792,
+            "lpips": 0.11080367118120193,
+            "mse": 0.0027726790867745876,
+            "total": 0.02309693768620491,
+            "updates": 250
+          },
+          {
+            "estimated_total_bpga": 0.5765709280967712,
+            "lpips": 0.10606103390455246,
+            "mse": 0.0026529207825660706,
+            "total": 0.022716186940670013,
+            "updates": 275
+          },
+          {
+            "estimated_total_bpga": 0.5756886601448059,
+            "lpips": 0.10395919531583786,
+            "mse": 0.0025408135261386633,
+            "total": 0.022476403042674065,
+            "updates": 300
+          },
+          {
+            "estimated_total_bpga": 0.5749181509017944,
+            "lpips": 0.09914398193359375,
+            "mse": 0.0023639420978724957,
+            "total": 0.02203904464840889,
+            "updates": 325
+          },
+          {
+            "estimated_total_bpga": 0.5743162631988525,
+            "lpips": 0.09552405774593353,
+            "mse": 0.002331126481294632,
+            "total": 0.02180982567369938,
+            "updates": 350
+          },
+          {
+            "estimated_total_bpga": 0.5738855600357056,
+            "lpips": 0.09231966733932495,
+            "mse": 0.002192537300288677,
+            "total": 0.021499991416931152,
+            "updates": 375
+          },
+          {
+            "estimated_total_bpga": 0.5735315680503845,
+            "lpips": 0.0895065888762474,
+            "mse": 0.0021396223455667496,
+            "total": 0.021297359839081764,
+            "updates": 400
+          },
+          {
+            "estimated_total_bpga": 0.5732969641685486,
+            "lpips": 0.08889418840408325,
+            "mse": 0.002123490208759904,
+            "total": 0.021244602277874947,
+            "updates": 425
+          },
+          {
+            "estimated_total_bpga": 0.5730770826339722,
+            "lpips": 0.08683063834905624,
+            "mse": 0.0021162887569516897,
+            "total": 0.021128594875335693,
+            "updates": 450
+          },
+          {
+            "estimated_total_bpga": 0.5729622840881348,
+            "lpips": 0.08565635979175568,
+            "mse": 0.0020582270808517933,
+            "total": 0.02100887894630432,
+            "updates": 475
+          },
+          {
+            "estimated_total_bpga": 0.5728232860565186,
+            "lpips": 0.08524326980113983,
+            "mse": 0.0021080034784972668,
+            "total": 0.021034441888332367,
+            "updates": 500
+          }
+        ],
+        "trainable_parameters": 508640
+      },
+      "bitstream": {
+        "bytes": 138543,
+        "headers": {
+          "base": {
+            "cdf_sha256": "2246b1d67f44f1b01aabc3a53baa30c391226318ab5e33b6689f057807002849",
+            "cdf_transmitted_per_scene": false,
+            "format": "M3OBBASE observable q8 low-rank base",
+            "geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+            "metadata_coder": "zlib level 9",
+            "stream_bytes": {
+              "basis_q8": 16672,
+              "container": 118247,
+              "metadata": 1819,
+              "score_q8": 99724
+            },
+            "symbol_coder": "CompressAI rANS"
+          },
+          "combined": {
+            "base_bytes": 118247,
+            "container_bytes": 138543,
+            "format": "M3HPCODE",
+            "residual_bytes": 20264
+          },
+          "receiver_component_errors": {
+            "base_observable_max_abs": 0.0,
+            "residual_observable_max_abs": 0.0
+          },
+          "residual": {
+            "container_bytes": 20264,
+            "format": "M3HPRANS mean-scale hyperprior",
+            "model_fingerprint": "f6e0c26b0759b5b8ad949218dc7b91ccd567c8b027c1a01e25d469cc061fbea8",
+            "rans_bytes": 20184
+          }
+        },
+        "path": "/ceph_data/jihyoun0403/vml/NFC-GS-Hybrid-Optimization-artifacts/remote-followup16/results/remote_followup_16gpu_50k/scene_lowrank_rank32_multiscale1d/lambda_0p0256/final_50k/sga_plus_500/sga_plus_nfcgs_recipe/c1p0/bitstreams/poor_bf3598d725ce7cf4.m3hp",
+        "sha256": "112550fc2226b7a8ce8fd8b3d80de0ebd334dc79f1b3c199fdc2cfdf9a1c0ca3"
+      },
+      "context": {
+        "lpips": 0.08496996015310287,
+        "mse": 0.00209683901630342,
+        "per_view": [
+          {
+            "frame": 0,
+            "lpips": 0.09208504855632782,
+            "mse": 0.0032494962215423584,
+            "psnr_db": 24.881839752197266,
+            "ssim": 0.8364320397377014
+          },
+          {
+            "frame": 29,
+            "lpips": 0.0685931071639061,
+            "mse": 0.001846059923991561,
+            "psnr_db": 27.337541580200195,
+            "ssim": 0.894138514995575
+          },
+          {
+            "frame": 52,
+            "lpips": 0.065587617456913,
+            "mse": 0.0015177972381934524,
+            "psnr_db": 28.187864303588867,
+            "ssim": 0.9006673693656921
+          },
+          {
+            "frame": 91,
+            "lpips": 0.07621186971664429,
+            "mse": 0.00181108177639544,
+            "psnr_db": 27.420618057250977,
+            "ssim": 0.8861403465270996
+          },
+          {
+            "frame": 112,
+            "lpips": 0.08286122977733612,
+            "mse": 0.0021321256645023823,
+            "psnr_db": 26.711872100830078,
+            "ssim": 0.8753218054771423
+          },
+          {
+            "frame": 135,
+            "lpips": 0.09708966314792633,
+            "mse": 0.0025871493853628635,
+            "psnr_db": 25.871784210205078,
+            "ssim": 0.850455105304718
+          },
+          {
+            "frame": 161,
+            "lpips": 0.10230845957994461,
+            "mse": 0.00200604647397995,
+            "psnr_db": 26.97658920288086,
+            "ssim": 0.8536460995674133
+          },
+          {
+            "frame": 199,
+            "lpips": 0.09502270817756653,
+            "mse": 0.0016249552136287093,
+            "psnr_db": 27.891586303710938,
+            "ssim": 0.873413622379303
+          }
+        ],
+        "psnr_db": 26.909961700439453,
+        "ssim": 0.87127685546875
+      },
+      "context_frames": [
+        0,
+        29,
+        52,
+        91,
+        112,
+        135,
+        161,
+        199
+      ],
+      "difficulty": "poor",
+      "receiver_camera_query_contains_target_rgb": false,
+      "receiver_cross_process": {
+        "atol": 1e-07,
+        "decoded_base_shape": [
+          4096,
+          736
+        ],
+        "decoded_residual_shape": [
+          4096,
+          736
+        ],
+        "receiver_audit": {
+          "bitstream_sha256": "112550fc2226b7a8ce8fd8b3d80de0ebd334dc79f1b3c199fdc2cfdf9a1c0ca3",
+          "codec_checkpoint_sha256": "50ef16b63909c556584c07835ca842c1d71b61c807693314bd6c1143391eb05a",
+          "encoded_geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+          "geometry_sha256": "b822f058fb5de3f107062565cebf8f9ffcead9f5f2d1fe613584b7f6941821cc",
+          "official_checkpoint_sha256": "90be09504fa046792dedfe2d1b17e00bb64a5bf95da477d71e233be01df72a42",
+          "runtime_basis_matches_encoded_bytes": false,
+          "runtime_geometry_basis_sha256": "caa9e6398e0658459ed68df393cbf03b7d1c8220a3501599b5abb8fb116ebbc1",
+          "texture_sha256": "7a3d469650c199ab3645d023c8a012a3cb1b111e32f3f92268cf4d80c5819453"
+        },
+        "rtol": 1e-06,
+        "synthesis_allclose": {
+          "geometry_tokens": true,
+          "means": true,
+          "opacities": true,
+          "reg": true,
+          "rotations": true,
+          "scales": true,
+          "sh": true,
+          "texture_tokens": true
+        },
+        "synthesis_max_abs_error": {
+          "geometry_tokens": 0.0,
+          "means": 0.0,
+          "opacities": 0.0,
+          "reg": 0.0,
+          "rotations": 0.0,
+          "scales": 0.0,
+          "sh": 0.0,
+          "texture_tokens": 0.0
+        },
+        "target_rendered_in_receiver": true
+      },
+      "receiver_inputs": [
+        "official_globalsplat_checkpoint",
+        "shared_codec_checkpoint",
+        "scene_bitstream",
+        "target_cameras_without_rgb"
+      ],
+      "receiver_subprocess": true,
+      "scene": "bf3598d725ce7cf4",
+      "target": {
+        "lpips": 0.11897474527359009,
+        "mse": 0.0028413222171366215,
+        "per_view": [
+          {
+            "frame": 1,
+            "lpips": 0.10563068091869354,
+            "mse": 0.004061625339090824,
+            "psnr_db": 23.913002014160156,
+            "ssim": 0.8393236994743347
+          },
+          {
+            "frame": 25,
+            "lpips": 0.09445109963417053,
+            "mse": 0.0022073304280638695,
+            "psnr_db": 26.56132698059082,
+            "ssim": 0.8868657946586609
+          },
+          {
+            "frame": 50,
+            "lpips": 0.08480069786310196,
+            "mse": 0.0017831929726526141,
+            "psnr_db": 27.488018035888672,
+            "ssim": 0.8969057202339172
+          },
+          {
+            "frame": 75,
+            "lpips": 0.11087758839130402,
+            "mse": 0.0021214690059423447,
+            "psnr_db": 26.733631134033203,
+            "ssim": 0.8696296811103821
+          },
+          {
+            "frame": 100,
+            "lpips": 0.11072045564651489,
+            "mse": 0.0022898870520293713,
+            "psnr_db": 26.4018611907959,
+            "ssim": 0.8680031895637512
+          },
+          {
+            "frame": 125,
+            "lpips": 0.12829047441482544,
+            "mse": 0.003027390455827117,
+            "psnr_db": 25.189315795898438,
+            "ssim": 0.8341856002807617
+          },
+          {
+            "frame": 150,
+            "lpips": 0.16582609713077545,
+            "mse": 0.004755675792694092,
+            "psnr_db": 23.22787857055664,
+            "ssim": 0.8094928860664368
+          },
+          {
+            "frame": 175,
+            "lpips": 0.15120087563991547,
+            "mse": 0.0024840058758854866,
+            "psnr_db": 26.048473358154297,
+            "ssim": 0.8420829772949219
+          }
+        ],
+        "psnr_db": 25.695438385009766,
+        "ssim": 0.8558111786842346
+      },
+      "target_frames": [
+        1,
+        25,
+        50,
+        75,
+        100,
+        125,
+        150,
+        175
+      ],
+      "target_used_for_gradient": false,
+      "target_used_for_selection": false
+    }
+  ],
+  "shared_codec": {
+    "lambda_distortion": null,
+    "lambda_render": null,
+    "model_fingerprint": "f6e0c26b0759b5b8ad949218dc7b91ccd567c8b027c1a01e25d469cc061fbea8",
+    "path": "/ceph_data/jihyoun0403/vml/NFC-GS-Hybrid-Optimization-artifacts/remote-followup16/checkpoints/remote_followup_16gpu_50k/scene_lowrank_rank32_multiscale1d/lambda_0p0256/step50000.ckpt",
+    "pretraining_split": "RE10K train split",
+    "pretraining_target_views_used": 8,
+    "rendering_aware_shared_training": true,
+    "sha256": "50ef16b63909c556584c07835ca842c1d71b61c807693314bd6c1143391eb05a",
+    "shared_checkpoint_bytes_excluded_from_scene_rate": true
+  }
+}

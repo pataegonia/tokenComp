@@ -1,0 +1,39 @@
+# @package _global_
+# Experimental end-to-end recipe: GlobalSplat encoder, main codec, GS decoder.
+# The codec stays enabled throughout the capacity/rate curriculum.
+defaults:
+  - re10k_32k_nfcgs
+  - _self_
+
+experiment_name: nfcgs_main_joint
+
+model:
+  freeze_globalsplat: false
+  feature_codec_train_scope: all
+
+curriculum:
+  # Global batch is 8, half the released recipe's 16. Double step-based
+  # boundaries to preserve the number of scenes seen at each transition.
+  boundaries: [20000, 40000, 100000]
+  ramp_iters: 4000
+
+optimizer:
+  name: adamw
+  lr: 5.0e-4
+  weight_decay: 1.0e-6
+  batch_size: 1
+  lr_milestones: []
+
+trainer:
+  # 500k x global batch 8 = 4.0M scenes, modestly above the released
+  # GlobalSplat budget (220k x global batch 16 = 3.52M scenes).
+  max_steps: 500000
+  accumulate_grad_batches: 8
+
+loss:
+  rate_ramp_steps: 20000
+
+checkpointing:
+  load: null
+  resume: false
+  auto_resume: false

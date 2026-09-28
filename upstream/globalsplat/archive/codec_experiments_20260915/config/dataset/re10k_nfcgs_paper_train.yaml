@@ -1,0 +1,29 @@
+# GlobalSplat paper training sampler, used with the frozen NFC-GS codec.
+#
+# This is a self-contained overlay instead of relying on the mutable defaults in
+# re10k.yaml.  The sampled 24-view context pool is split by the model wrapper:
+# both branches share the temporal min/max anchors and alternate the 22 middle
+# views, producing two 13-view forward passes.  All 12 targets are shared.
+defaults:
+  - re10k
+
+num_context_views: 24
+num_target_views: 12
+
+min_distance_between_context_views: 40
+max_distance_between_context_views: 220
+initial_min_distance_between_context_views: 40
+initial_max_distance_between_context_views: 220
+context_gap_warm_up_steps: 0
+
+max_distance_to_context_views: 0
+initial_max_distance_to_context_views: 0
+target_gap_warm_up_steps: 0
+extra_views_sampling_strategy: farthest_point
+target_views_replace_sample: false
+exclude_context_from_targets: false
+
+augment: true
+# Preserve the archived NFC-GS data-stream seed while changing only the view
+# recipe.  The model/optimizer seed remains 111123 in the experiment config.
+data_loader_seed: 403

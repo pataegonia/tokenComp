@@ -1,0 +1,34 @@
+schema: globalsplat_feature_codec.reproduction.v1
+method: geometry_conditioned_2d
+working_directory: models/globalsplat_feature_codec/methods/geometry_conditioned_2d
+environment: GSC_Seung
+gpus: [4, 5, 6, 7]
+effective_batch: 16
+stage_chain:
+  - name: codec_only_distortion
+    config: configs/warmup_16x16_distortion.yaml
+    steps: 5000
+    initializer: ../../checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt
+    final: ../../checkpoints/geometry_conditioned_2d/codec_only_distortion/step5000.ckpt
+  - name: joint_distortion
+    config: configs/e2e_16x16_distortion.yaml
+    steps: 25000
+    initializer: ../../checkpoints/geometry_conditioned_2d/codec_only_distortion/step5000.ckpt
+    final: ../../checkpoints/geometry_conditioned_2d/joint_distortion_from_codec_only_step5000/step25000.ckpt
+training_command: >-
+  CUDA_VISIBLE_DEVICES=4,5,6,7 conda run -n GSC_Seung python
+  scripts/run_16x16_distortion_pipeline.py --run-root ../../runs/geometry_conditioned_2d
+forward_evaluation_command: >-
+  CUDA_VISIBLE_DEVICES=<gpu> conda run -n GSC_Seung python scripts/evaluate_primary3_exact.py
+  --config configs/e2e_16x16_distortion.yaml
+  --checkpoint ../../checkpoints/geometry_conditioned_2d/joint_distortion_from_codec_only_step5000/step25000.ckpt
+  --receiver-subprocess --output ../../runs/geometry_conditioned_2d/primary3_forward
+latent_tuning_command: >-
+  CUDA_VISIBLE_DEVICES=<gpu> conda run -n GSC_Seung python scripts/evaluate_primary3_codec_latent_tuning.py
+  --config configs/e2e_16x16_distortion.yaml
+  --checkpoint ../../checkpoints/geometry_conditioned_2d/joint_distortion_from_codec_only_step5000/step25000.ckpt
+  --steps 1000 --lr-y 5e-3 --lr-z 5e-3 --rate-weight 0
+  --output ../../runs/geometry_conditioned_2d/primary3_tuning
+retained_results:
+  - ../../results/figure_260818/geometry_conditioned_2d_forward_step25000
+  - ../../results/figure_260818/geometry_conditioned_2d_tuning_step1000

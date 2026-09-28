@@ -1,0 +1,1444 @@
+{
+  "aggregate": {
+    "lpips": 0.08781042570869128,
+    "mse": 0.0015998864873836283,
+    "psnr_db": 28.90435489018758,
+    "ssim": 0.9149739767114321
+  },
+  "checkpoint": {
+    "path": "models/globalsplat_feature_codec/checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt",
+    "sha256": "90be09504fa046792dedfe2d1b17e00bb64a5bf95da477d71e233be01df72a42",
+    "source_url": "https://huggingface.co/Roni-It/globalsplat/resolve/main/globalsplat-re10k-32k.ckpt"
+  },
+  "codec": {
+    "actual_rans": true,
+    "all_scene_decoder_state_counted": true,
+    "base_score_rate_surrogate": "fixed_q8_cdf_local_straight_through",
+    "entropy_model": "mean-scale hyperprior (morton1d)",
+    "factor_bits": 8,
+    "itt_base_quantization": "score_q8_and_mean_fp16_ste",
+    "itt_learning_rate": 0.002,
+    "itt_learning_rates": {
+      "mean": 0.001,
+      "residual_y": 0.02,
+      "residual_z": 0.005,
+      "score": 0.02
+    },
+    "itt_lr_gamma": 0.1,
+    "itt_lr_milestones": [],
+    "itt_lr_schedule": "warmup_cosine",
+    "itt_lr_schedule_horizon": 500,
+    "itt_optimizer": {
+      "beta1": 0.9,
+      "beta2": 0.999,
+      "eps": 1e-08,
+      "name": "Adam"
+    },
+    "itt_quantization": "sga_plus",
+    "itt_sga_plus_scope": [
+      "residual_y",
+      "residual_z"
+    ],
+    "itt_sga_plus_temperature": {
+      "anneal_rate": 0.001,
+      "initial": 1.0,
+      "minimum": 0.0001
+    },
+    "lowrank_rank": 32,
+    "optimized_scene_state": [
+      "lowrank_scores",
+      "lowrank_mean",
+      "residual_y",
+      "residual_z"
+    ],
+    "rate_weight_during_scene_adaptation": 0.0128,
+    "reported_metric_source": "actual combined-bitstream receiver decode",
+    "scene_lowrank_basis_frozen": true,
+    "scene_lowrank_scores_mean_frozen": false,
+    "target_oracle_diagnostic": false
+  },
+  "decoder_side_image_or_token_leak": false,
+  "environment": {
+    "cuda_runtime": "12.1",
+    "device": "cuda",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "hostname": "ariel-g1",
+    "python": "3.10.20",
+    "seed": 111123,
+    "torch": "2.5.1+cu121"
+  },
+  "generated_at": "2026-08-20T14:10:13.291836+09:00",
+  "method": "globalsplat_32k_lic_friendly_rendering_aware_hyperprior",
+  "model": {
+    "gaussians_per_scene": 32768,
+    "geometry_representation": "decoder_observable_512plus224",
+    "globalsplat_frozen": true,
+    "learned_transform_kind": "lic_friendly",
+    "learned_transform_layout": "morton1d",
+    "learned_transform_variant": "multiscale1d",
+    "official_variant": "globalsplat-re10k-32k",
+    "ordering": "decoded_token_center_morton3d_10bit",
+    "shared_hyperprior_frozen": true
+  },
+  "protocol": {
+    "context_target_disjoint": true,
+    "context_views": 8,
+    "dataset": "RE10K test Primary3",
+    "fixed_optimizer_updates": 500,
+    "image_shape": [
+      256,
+      256
+    ],
+    "state_selection": "fixed_final",
+    "target_in_loss_or_backward": false,
+    "target_no_grad_state_selection": false,
+    "target_views": 8
+  },
+  "rate": {
+    "mean_bits_per_gaussian_attribute": 0.575002206920904,
+    "mean_bytes_per_scene": 138957.33333333334,
+    "mean_mib_per_scene": 0.1325200398763021
+  },
+  "rate_gradient_contract": {
+    "direct_symbol_rate_gradients_verified": true,
+    "excluded_rate_constant_state": [
+      "lowrank_mean_fp16",
+      "scene_lowrank_basis_q8",
+      "container_headers"
+    ],
+    "final_report_uses_hard_symbols": true,
+    "hard_forward_symbols": false,
+    "id": "scene_residual_sga_plus_likelihood.v1",
+    "implementation_sha256": {
+      "evaluator": "8a47b5cb391e85a2a5d723f25a3e25cef55b472e89ebc9142504217a4caa252f",
+      "lowrank_base_rate": "3349b7a0488b5ce09abc7270de51883882a353294b07b1b1b71020b6e368f8e8",
+      "residual_entropy_model": "eb564082040b06b46b0f1d24dae3f8ba9876f9517a56207d06191a19ed8755a8"
+    },
+    "scene_audits_passed": true
+  },
+  "receiver_subprocess": true,
+  "scenes": [
+    {
+      "adaptation": {
+        "codec_initialization_seconds": 0.5029526180587709,
+        "feature_extraction_seconds_excluded": 0.28853725316002965,
+        "max_surrogate_decode_error": 0.0,
+        "optimization_and_selection_seconds": 38.579645154066384,
+        "oracle_trace": [],
+        "peak_allocated_bytes": 2835510272,
+        "peak_reserved_bytes": 2875195392,
+        "rate_gradient_audit": {
+          "contract_id": "scene_residual_sga_plus_likelihood.v1",
+          "excluded_fields": {
+            "lowrank_mean": "fixed-size FP16 payload; rate is value-independent",
+            "scene_lowrank_basis": "fixed during ITT; fixed-size q8 payload"
+          },
+          "fields": {
+            "lowrank_scores": {
+              "finite": true,
+              "max_abs_gradient": 292.9944763183594,
+              "nonzero_gradient_scalars": 130574,
+              "scalars": 131072,
+              "status": "PASS"
+            },
+            "residual_y": {
+              "finite": true,
+              "max_abs_gradient": 1295.3294677734375,
+              "nonzero_gradient_scalars": 323856,
+              "scalars": 327680,
+              "status": "PASS"
+            },
+            "residual_z": {
+              "finite": true,
+              "max_abs_gradient": 1140.7685546875,
+              "nonzero_gradient_scalars": 45884,
+              "scalars": 49152,
+              "status": "PASS"
+            }
+          },
+          "status": "PASS"
+        },
+        "receiver_subprocess_seconds": 11.199864359106869,
+        "reported_checkpoints": {},
+        "selected_target_psnr_db": null,
+        "selected_updates": 500,
+        "total_codec_seconds": 39.082597772125155,
+        "trace": [
+          {
+            "estimated_total_bpga": 0.6023339629173279,
+            "lpips": 0.13783487677574158,
+            "mse": 0.0010260422714054585,
+            "total": 0.015627659857273102,
+            "updates": 0
+          },
+          {
+            "estimated_total_bpga": 0.5966483950614929,
+            "lpips": 0.10445112735033035,
+            "mse": 0.0010296106338500977,
+            "total": 0.013889266178011894,
+            "updates": 25
+          },
+          {
+            "estimated_total_bpga": 0.5908865332603455,
+            "lpips": 0.09242315590381622,
+            "mse": 0.000979715958237648,
+            "total": 0.013164221309125423,
+            "updates": 50
+          },
+          {
+            "estimated_total_bpga": 0.5864588618278503,
+            "lpips": 0.09093965590000153,
+            "mse": 0.0009897896088659763,
+            "total": 0.013043445535004139,
+            "updates": 75
+          },
+          {
+            "estimated_total_bpga": 0.5830815434455872,
+            "lpips": 0.08927728235721588,
+            "mse": 0.0009554087882861495,
+            "total": 0.012882716953754425,
+            "updates": 100
+          },
+          {
+            "estimated_total_bpga": 0.5802022814750671,
+            "lpips": 0.08283659815788269,
+            "mse": 0.0009253036114387214,
+            "total": 0.012493722140789032,
+            "updates": 125
+          },
+          {
+            "estimated_total_bpga": 0.5777847766876221,
+            "lpips": 0.08236584067344666,
+            "mse": 0.0008723295759409666,
+            "total": 0.012386266142129898,
+            "updates": 150
+          },
+          {
+            "estimated_total_bpga": 0.5759995579719543,
+            "lpips": 0.08127544820308685,
+            "mse": 0.0008571647922508419,
+            "total": 0.012293731793761253,
+            "updates": 175
+          },
+          {
+            "estimated_total_bpga": 0.5744516253471375,
+            "lpips": 0.07802726328372955,
+            "mse": 0.000834923586808145,
+            "total": 0.012089267373085022,
+            "updates": 200
+          },
+          {
+            "estimated_total_bpga": 0.5731790661811829,
+            "lpips": 0.073407843708992,
+            "mse": 0.0007859952747821808,
+            "total": 0.011793079786002636,
+            "updates": 225
+          },
+          {
+            "estimated_total_bpga": 0.5717353224754333,
+            "lpips": 0.07213475555181503,
+            "mse": 0.0007636365480720997,
+            "total": 0.011688586324453354,
+            "updates": 250
+          },
+          {
+            "estimated_total_bpga": 0.5706812739372253,
+            "lpips": 0.06998029351234436,
+            "mse": 0.0007378155714832246,
+            "total": 0.011541550979018211,
+            "updates": 275
+          },
+          {
+            "estimated_total_bpga": 0.5698610544204712,
+            "lpips": 0.0677824467420578,
+            "mse": 0.0006664774264208972,
+            "total": 0.011349821463227272,
+            "updates": 300
+          },
+          {
+            "estimated_total_bpga": 0.5691577196121216,
+            "lpips": 0.0653667151927948,
+            "mse": 0.0006349042523652315,
+            "total": 0.011188458651304245,
+            "updates": 325
+          },
+          {
+            "estimated_total_bpga": 0.5685155987739563,
+            "lpips": 0.06334936618804932,
+            "mse": 0.000639390607830137,
+            "total": 0.011083858087658882,
+            "updates": 350
+          },
+          {
+            "estimated_total_bpga": 0.5681737065315247,
+            "lpips": 0.06051350012421608,
+            "mse": 0.0005774767487309873,
+            "total": 0.01087577547878027,
+            "updates": 375
+          },
+          {
+            "estimated_total_bpga": 0.5678533315658569,
+            "lpips": 0.05977733060717583,
+            "mse": 0.0005526246386580169,
+            "total": 0.010810013860464096,
+            "updates": 400
+          },
+          {
+            "estimated_total_bpga": 0.5675379633903503,
+            "lpips": 0.05840330198407173,
+            "mse": 0.0005408551078289747,
+            "total": 0.010725505650043488,
+            "updates": 425
+          },
+          {
+            "estimated_total_bpga": 0.5673489570617676,
+            "lpips": 0.05757496505975723,
+            "mse": 0.0005400522495619953,
+            "total": 0.010680867359042168,
+            "updates": 450
+          },
+          {
+            "estimated_total_bpga": 0.5672048926353455,
+            "lpips": 0.05727672949433327,
+            "mse": 0.0005323796067386866,
+            "total": 0.010656438767910004,
+            "updates": 475
+          },
+          {
+            "estimated_total_bpga": 0.5670797824859619,
+            "lpips": 0.05684434622526169,
+            "mse": 0.0005310383858159184,
+            "total": 0.01063187699764967,
+            "updates": 500
+          }
+        ],
+        "trainable_parameters": 508640
+      },
+      "bitstream": {
+        "bytes": 137143,
+        "headers": {
+          "base": {
+            "cdf_sha256": "2246b1d67f44f1b01aabc3a53baa30c391226318ab5e33b6689f057807002849",
+            "cdf_transmitted_per_scene": false,
+            "format": "M3OBBASE observable q8 low-rank base",
+            "geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+            "metadata_coder": "zlib level 9",
+            "stream_bytes": {
+              "basis_q8": 16368,
+              "container": 119607,
+              "metadata": 1815,
+              "score_q8": 101392
+            },
+            "symbol_coder": "CompressAI rANS"
+          },
+          "combined": {
+            "base_bytes": 119607,
+            "container_bytes": 137143,
+            "format": "M3HPCODE",
+            "residual_bytes": 17504
+          },
+          "receiver_component_errors": {
+            "base_observable_max_abs": 0.0,
+            "residual_observable_max_abs": 0.0
+          },
+          "residual": {
+            "container_bytes": 17504,
+            "format": "M3HPRANS mean-scale hyperprior",
+            "model_fingerprint": "f6e0c26b0759b5b8ad949218dc7b91ccd567c8b027c1a01e25d469cc061fbea8",
+            "rans_bytes": 17424
+          }
+        },
+        "path": "/ceph_data/jihyoun0403/vml/NFC-GS-Hybrid-Optimization-artifacts/remote-followup16/results/remote_followup_16gpu_50k/scene_lowrank_rank32_multiscale1d/lambda_0p0256/final_50k/sga_plus_500/sga_plus_nfcgs_recipe/c0p5/bitstreams/good_3d410da4d7fd9f64.m3hp",
+        "sha256": "7d0de720a3c70c1262a2e88cc19e0a253f688e54286e20525706a8db3cdb1da9"
+      },
+      "context": {
+        "lpips": 0.05681630223989487,
+        "mse": 0.0005306479288265109,
+        "per_view": [
+          {
+            "frame": 0,
+            "lpips": 0.0686066672205925,
+            "mse": 0.0009833488147705793,
+            "psnr_db": 30.072925567626953,
+            "ssim": 0.9241926670074463
+          },
+          {
+            "frame": 22,
+            "lpips": 0.06014323607087135,
+            "mse": 0.0006871444638818502,
+            "psnr_db": 31.6295223236084,
+            "ssim": 0.9460079669952393
+          },
+          {
+            "frame": 31,
+            "lpips": 0.05477146804332733,
+            "mse": 0.0005716608138754964,
+            "psnr_db": 32.428619384765625,
+            "ssim": 0.9552785754203796
+          },
+          {
+            "frame": 39,
+            "lpips": 0.056415047496557236,
+            "mse": 0.0004613283963408321,
+            "psnr_db": 33.359901428222656,
+            "ssim": 0.9619626402854919
+          },
+          {
+            "frame": 47,
+            "lpips": 0.0545860156416893,
+            "mse": 0.0004193774366285652,
+            "psnr_db": 33.773948669433594,
+            "ssim": 0.9657931327819824
+          },
+          {
+            "frame": 56,
+            "lpips": 0.05263403430581093,
+            "mse": 0.0004956070333719254,
+            "psnr_db": 33.04862594604492,
+            "ssim": 0.9692720770835876
+          },
+          {
+            "frame": 66,
+            "lpips": 0.0536678321659565,
+            "mse": 0.0002783532254397869,
+            "psnr_db": 35.554039001464844,
+            "ssim": 0.9748247265815735
+          },
+          {
+            "frame": 75,
+            "lpips": 0.05370612442493439,
+            "mse": 0.00034836301347240806,
+            "psnr_db": 34.579681396484375,
+            "ssim": 0.9749658703804016
+          }
+        ],
+        "psnr_db": 33.055908203125,
+        "ssim": 0.959037184715271
+      },
+      "context_frames": [
+        0,
+        22,
+        31,
+        39,
+        47,
+        56,
+        66,
+        75
+      ],
+      "difficulty": "good",
+      "receiver_camera_query_contains_target_rgb": false,
+      "receiver_cross_process": {
+        "atol": 1e-07,
+        "decoded_base_shape": [
+          4096,
+          736
+        ],
+        "decoded_residual_shape": [
+          4096,
+          736
+        ],
+        "receiver_audit": {
+          "bitstream_sha256": "7d0de720a3c70c1262a2e88cc19e0a253f688e54286e20525706a8db3cdb1da9",
+          "codec_checkpoint_sha256": "50ef16b63909c556584c07835ca842c1d71b61c807693314bd6c1143391eb05a",
+          "encoded_geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+          "geometry_sha256": "9787cd9a04406d98d346ccd69a6363e5da597a0afaa69f90158c309a0618a673",
+          "official_checkpoint_sha256": "90be09504fa046792dedfe2d1b17e00bb64a5bf95da477d71e233be01df72a42",
+          "runtime_basis_matches_encoded_bytes": false,
+          "runtime_geometry_basis_sha256": "caa9e6398e0658459ed68df393cbf03b7d1c8220a3501599b5abb8fb116ebbc1",
+          "texture_sha256": "5556b715ecb69ceec1e2f04225e765c79ed7b2e368d686a14c1a3217067a5237"
+        },
+        "rtol": 1e-06,
+        "synthesis_allclose": {
+          "geometry_tokens": true,
+          "means": true,
+          "opacities": true,
+          "reg": true,
+          "rotations": true,
+          "scales": true,
+          "sh": true,
+          "texture_tokens": true
+        },
+        "synthesis_max_abs_error": {
+          "geometry_tokens": 0.0,
+          "means": 0.0,
+          "opacities": 0.0,
+          "reg": 0.0,
+          "rotations": 0.0,
+          "scales": 0.0,
+          "sh": 0.0,
+          "texture_tokens": 0.0
+        },
+        "target_rendered_in_receiver": true
+      },
+      "receiver_inputs": [
+        "official_globalsplat_checkpoint",
+        "shared_codec_checkpoint",
+        "scene_bitstream",
+        "target_cameras_without_rgb"
+      ],
+      "receiver_subprocess": true,
+      "scene": "3d410da4d7fd9f64",
+      "target": {
+        "lpips": 0.07501956075429916,
+        "mse": 0.0006542567862197757,
+        "per_view": [
+          {
+            "frame": 1,
+            "lpips": 0.07744362205266953,
+            "mse": 0.0009761214023455977,
+            "psnr_db": 30.104961395263672,
+            "ssim": 0.9249424934387207
+          },
+          {
+            "frame": 9,
+            "lpips": 0.08725867420434952,
+            "mse": 0.0009457856649532914,
+            "psnr_db": 30.24207305908203,
+            "ssim": 0.9288711547851562
+          },
+          {
+            "frame": 17,
+            "lpips": 0.09238921850919724,
+            "mse": 0.0008312471909448504,
+            "psnr_db": 30.802698135375977,
+            "ssim": 0.9341812133789062
+          },
+          {
+            "frame": 26,
+            "lpips": 0.06655741482973099,
+            "mse": 0.0006317602237686515,
+            "psnr_db": 31.994478225708008,
+            "ssim": 0.9514079093933105
+          },
+          {
+            "frame": 35,
+            "lpips": 0.06766221672296524,
+            "mse": 0.0005412967293523252,
+            "psnr_db": 32.665645599365234,
+            "ssim": 0.9580288529396057
+          },
+          {
+            "frame": 44,
+            "lpips": 0.06823735684156418,
+            "mse": 0.0004620058462023735,
+            "psnr_db": 33.3535270690918,
+            "ssim": 0.9608713984489441
+          },
+          {
+            "frame": 53,
+            "lpips": 0.06889951974153519,
+            "mse": 0.0004970584413968027,
+            "psnr_db": 33.035926818847656,
+            "ssim": 0.967106819152832
+          },
+          {
+            "frame": 62,
+            "lpips": 0.07170845568180084,
+            "mse": 0.00034877899452112615,
+            "psnr_db": 34.57449722290039,
+            "ssim": 0.9714653491973877
+          }
+        ],
+        "psnr_db": 32.09672546386719,
+        "ssim": 0.9496093988418579
+      },
+      "target_frames": [
+        1,
+        9,
+        17,
+        26,
+        35,
+        44,
+        53,
+        62
+      ],
+      "target_used_for_gradient": false,
+      "target_used_for_selection": false
+    },
+    {
+      "adaptation": {
+        "codec_initialization_seconds": 0.07048498187214136,
+        "feature_extraction_seconds_excluded": 0.21023575216531754,
+        "max_surrogate_decode_error": 0.0,
+        "optimization_and_selection_seconds": 37.53884637588635,
+        "oracle_trace": [],
+        "peak_allocated_bytes": 2925111296,
+        "peak_reserved_bytes": 2963275776,
+        "rate_gradient_audit": {
+          "contract_id": "scene_residual_sga_plus_likelihood.v1",
+          "excluded_fields": {
+            "lowrank_mean": "fixed-size FP16 payload; rate is value-independent",
+            "scene_lowrank_basis": "fixed during ITT; fixed-size q8 payload"
+          },
+          "fields": {
+            "lowrank_scores": {
+              "finite": true,
+              "max_abs_gradient": 249.41659545898438,
+              "nonzero_gradient_scalars": 130765,
+              "scalars": 131072,
+              "status": "PASS"
+            },
+            "residual_y": {
+              "finite": true,
+              "max_abs_gradient": 1201.593505859375,
+              "nonzero_gradient_scalars": 324187,
+              "scalars": 327680,
+              "status": "PASS"
+            },
+            "residual_z": {
+              "finite": true,
+              "max_abs_gradient": 1733.4979248046875,
+              "nonzero_gradient_scalars": 46163,
+              "scalars": 49152,
+              "status": "PASS"
+            }
+          },
+          "status": "PASS"
+        },
+        "receiver_subprocess_seconds": 10.636242211796343,
+        "reported_checkpoints": {},
+        "selected_target_psnr_db": null,
+        "selected_updates": 500,
+        "total_codec_seconds": 37.60933135775849,
+        "trace": [
+          {
+            "estimated_total_bpga": 0.5993810296058655,
+            "lpips": 0.13829287886619568,
+            "mse": 0.0023932927288115025,
+            "total": 0.016980014741420746,
+            "updates": 0
+          },
+          {
+            "estimated_total_bpga": 0.5944376587867737,
+            "lpips": 0.11019338667392731,
+            "mse": 0.00212448975071311,
+            "total": 0.01524296123534441,
+            "updates": 25
+          },
+          {
+            "estimated_total_bpga": 0.5908128023147583,
+            "lpips": 0.09896226227283478,
+            "mse": 0.0018923832103610039,
+            "total": 0.014402899891138077,
+            "updates": 50
+          },
+          {
+            "estimated_total_bpga": 0.5880632996559143,
+            "lpips": 0.09506358206272125,
+            "mse": 0.0017684532795101404,
+            "total": 0.014048842713236809,
+            "updates": 75
+          },
+          {
+            "estimated_total_bpga": 0.5854271650314331,
+            "lpips": 0.08920975029468536,
+            "mse": 0.0016378341242671013,
+            "total": 0.013591788709163666,
+            "updates": 100
+          },
+          {
+            "estimated_total_bpga": 0.5833531022071838,
+            "lpips": 0.08635067939758301,
+            "mse": 0.0016155876219272614,
+            "total": 0.013400041498243809,
+            "updates": 125
+          },
+          {
+            "estimated_total_bpga": 0.5812113285064697,
+            "lpips": 0.08201226592063904,
+            "mse": 0.0015201594214886427,
+            "total": 0.013060277327895164,
+            "updates": 150
+          },
+          {
+            "estimated_total_bpga": 0.5792760252952576,
+            "lpips": 0.08085143566131592,
+            "mse": 0.0014894906198605895,
+            "total": 0.012946795672178268,
+            "updates": 175
+          },
+          {
+            "estimated_total_bpga": 0.5777648687362671,
+            "lpips": 0.07601377367973328,
+            "mse": 0.0013909167610108852,
+            "total": 0.012586995959281921,
+            "updates": 200
+          },
+          {
+            "estimated_total_bpga": 0.5766085982322693,
+            "lpips": 0.07539738714694977,
+            "mse": 0.0013770367950201035,
+            "total": 0.012527495622634888,
+            "updates": 225
+          },
+          {
+            "estimated_total_bpga": 0.5756645798683167,
+            "lpips": 0.07108861953020096,
+            "mse": 0.0013014421565458179,
+            "total": 0.012224379926919937,
+            "updates": 250
+          },
+          {
+            "estimated_total_bpga": 0.5748468041419983,
+            "lpips": 0.07069602608680725,
+            "mse": 0.0013179349480196834,
+            "total": 0.012210775166749954,
+            "updates": 275
+          },
+          {
+            "estimated_total_bpga": 0.5741366147994995,
+            "lpips": 0.06905503571033478,
+            "mse": 0.0012589790858328342,
+            "total": 0.012060679495334625,
+            "updates": 300
+          },
+          {
+            "estimated_total_bpga": 0.5736541152000427,
+            "lpips": 0.06689200550317764,
+            "mse": 0.0012226428370922804,
+            "total": 0.01191001571714878,
+            "updates": 325
+          },
+          {
+            "estimated_total_bpga": 0.5732100009918213,
+            "lpips": 0.06365884840488434,
+            "mse": 0.0011416190536692739,
+            "total": 0.011661648750305176,
+            "updates": 350
+          },
+          {
+            "estimated_total_bpga": 0.5728784203529358,
+            "lpips": 0.06179620698094368,
+            "mse": 0.001115230261348188,
+            "total": 0.01153788436204195,
+            "updates": 375
+          },
+          {
+            "estimated_total_bpga": 0.5726131796836853,
+            "lpips": 0.05967119336128235,
+            "mse": 0.0010807898361235857,
+            "total": 0.011393798515200615,
+            "updates": 400
+          },
+          {
+            "estimated_total_bpga": 0.5724033713340759,
+            "lpips": 0.058343544602394104,
+            "mse": 0.001033714972436428,
+            "total": 0.011277655139565468,
+            "updates": 425
+          },
+          {
+            "estimated_total_bpga": 0.5722340941429138,
+            "lpips": 0.057517290115356445,
+            "mse": 0.0010294506791979074,
+            "total": 0.01122991181910038,
+            "updates": 450
+          },
+          {
+            "estimated_total_bpga": 0.5721262097358704,
+            "lpips": 0.056122228503227234,
+            "mse": 0.0009987750090658665,
+            "total": 0.011128101497888565,
+            "updates": 475
+          },
+          {
+            "estimated_total_bpga": 0.5720834732055664,
+            "lpips": 0.05600501969456673,
+            "mse": 0.0009915520204231143,
+            "total": 0.011114470660686493,
+            "updates": 500
+          }
+        ],
+        "trainable_parameters": 508640
+      },
+      "bitstream": {
+        "bytes": 138329,
+        "headers": {
+          "base": {
+            "cdf_sha256": "2246b1d67f44f1b01aabc3a53baa30c391226318ab5e33b6689f057807002849",
+            "cdf_transmitted_per_scene": false,
+            "format": "M3OBBASE observable q8 low-rank base",
+            "geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+            "metadata_coder": "zlib level 9",
+            "stream_bytes": {
+              "basis_q8": 16620,
+              "container": 118869,
+              "metadata": 1813,
+              "score_q8": 100404
+            },
+            "symbol_coder": "CompressAI rANS"
+          },
+          "combined": {
+            "base_bytes": 118869,
+            "container_bytes": 138329,
+            "format": "M3HPCODE",
+            "residual_bytes": 19428
+          },
+          "receiver_component_errors": {
+            "base_observable_max_abs": 0.0,
+            "residual_observable_max_abs": 0.0
+          },
+          "residual": {
+            "container_bytes": 19428,
+            "format": "M3HPRANS mean-scale hyperprior",
+            "model_fingerprint": "f6e0c26b0759b5b8ad949218dc7b91ccd567c8b027c1a01e25d469cc061fbea8",
+            "rans_bytes": 19348
+          }
+        },
+        "path": "/ceph_data/jihyoun0403/vml/NFC-GS-Hybrid-Optimization-artifacts/remote-followup16/results/remote_followup_16gpu_50k/scene_lowrank_rank32_multiscale1d/lambda_0p0256/final_50k/sga_plus_500/sga_plus_nfcgs_recipe/c0p5/bitstreams/middle_60c02c2807193b6e.m3hp",
+        "sha256": "1855444b95aca740df84c6f1b77115bd48547e226d64ac58d903bf34a5fb8a41"
+      },
+      "context": {
+        "lpips": 0.05600288510322571,
+        "mse": 0.0009866331238299608,
+        "per_view": [
+          {
+            "frame": 0,
+            "lpips": 0.04833856597542763,
+            "mse": 0.0007570750312879682,
+            "psnr_db": 31.20861053466797,
+            "ssim": 0.9496678709983826
+          },
+          {
+            "frame": 9,
+            "lpips": 0.046452973037958145,
+            "mse": 0.0008357376209460199,
+            "psnr_db": 30.7793025970459,
+            "ssim": 0.9503000378608704
+          },
+          {
+            "frame": 18,
+            "lpips": 0.051338087767362595,
+            "mse": 0.0008198459981940687,
+            "psnr_db": 30.86267852783203,
+            "ssim": 0.9477389454841614
+          },
+          {
+            "frame": 27,
+            "lpips": 0.05417550727725029,
+            "mse": 0.0009900551522150636,
+            "psnr_db": 30.043407440185547,
+            "ssim": 0.9433004856109619
+          },
+          {
+            "frame": 35,
+            "lpips": 0.057891495525836945,
+            "mse": 0.000983361853286624,
+            "psnr_db": 30.07286834716797,
+            "ssim": 0.9420382380485535
+          },
+          {
+            "frame": 44,
+            "lpips": 0.06284569203853607,
+            "mse": 0.0011644612532109022,
+            "psnr_db": 29.3387508392334,
+            "ssim": 0.9345870018005371
+          },
+          {
+            "frame": 53,
+            "lpips": 0.06186243146657944,
+            "mse": 0.0010846704244613647,
+            "psnr_db": 29.647022247314453,
+            "ssim": 0.9349440932273865
+          },
+          {
+            "frame": 69,
+            "lpips": 0.06511832773685455,
+            "mse": 0.0012578575406223536,
+            "psnr_db": 29.003684997558594,
+            "ssim": 0.9202053546905518
+          }
+        ],
+        "psnr_db": 30.11954116821289,
+        "ssim": 0.9403477907180786
+      },
+      "context_frames": [
+        0,
+        9,
+        18,
+        27,
+        35,
+        44,
+        53,
+        69
+      ],
+      "difficulty": "middle",
+      "receiver_camera_query_contains_target_rgb": false,
+      "receiver_cross_process": {
+        "atol": 1e-07,
+        "decoded_base_shape": [
+          4096,
+          736
+        ],
+        "decoded_residual_shape": [
+          4096,
+          736
+        ],
+        "receiver_audit": {
+          "bitstream_sha256": "1855444b95aca740df84c6f1b77115bd48547e226d64ac58d903bf34a5fb8a41",
+          "codec_checkpoint_sha256": "50ef16b63909c556584c07835ca842c1d71b61c807693314bd6c1143391eb05a",
+          "encoded_geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+          "geometry_sha256": "55601ef6c92d81801af1d0ea9f5d6a6d54e754962d9d79a3cd8368f08d239fd3",
+          "official_checkpoint_sha256": "90be09504fa046792dedfe2d1b17e00bb64a5bf95da477d71e233be01df72a42",
+          "runtime_basis_matches_encoded_bytes": false,
+          "runtime_geometry_basis_sha256": "caa9e6398e0658459ed68df393cbf03b7d1c8220a3501599b5abb8fb116ebbc1",
+          "texture_sha256": "501409eb43d84011ad404bf6e02ccbda926cc3d038e76c7d7772f14b122ec699"
+        },
+        "rtol": 1e-06,
+        "synthesis_allclose": {
+          "geometry_tokens": true,
+          "means": true,
+          "opacities": true,
+          "reg": true,
+          "rotations": true,
+          "scales": true,
+          "sh": true,
+          "texture_tokens": true
+        },
+        "synthesis_max_abs_error": {
+          "geometry_tokens": 0.0,
+          "means": 0.0,
+          "opacities": 0.0,
+          "reg": 0.0,
+          "rotations": 0.0,
+          "scales": 0.0,
+          "sh": 0.0,
+          "texture_tokens": 0.0
+        },
+        "target_rendered_in_receiver": true
+      },
+      "receiver_inputs": [
+        "official_globalsplat_checkpoint",
+        "shared_codec_checkpoint",
+        "scene_bitstream",
+        "target_cameras_without_rgb"
+      ],
+      "receiver_subprocess": true,
+      "scene": "60c02c2807193b6e",
+      "target": {
+        "lpips": 0.06953828781843185,
+        "mse": 0.0014206464402377605,
+        "per_view": [
+          {
+            "frame": 1,
+            "lpips": 0.057306498289108276,
+            "mse": 0.0008618338033556938,
+            "psnr_db": 30.645763397216797,
+            "ssim": 0.9469669461250305
+          },
+          {
+            "frame": 8,
+            "lpips": 0.0539180226624012,
+            "mse": 0.0010134284384548664,
+            "psnr_db": 29.94207191467285,
+            "ssim": 0.9476051330566406
+          },
+          {
+            "frame": 16,
+            "lpips": 0.060069236904382706,
+            "mse": 0.0011580000864341855,
+            "psnr_db": 29.3629150390625,
+            "ssim": 0.9432050585746765
+          },
+          {
+            "frame": 24,
+            "lpips": 0.06934051960706711,
+            "mse": 0.001529222703538835,
+            "psnr_db": 28.155292510986328,
+            "ssim": 0.9382245540618896
+          },
+          {
+            "frame": 32,
+            "lpips": 0.0706460028886795,
+            "mse": 0.001603950746357441,
+            "psnr_db": 27.948091506958008,
+            "ssim": 0.9370695948600769
+          },
+          {
+            "frame": 40,
+            "lpips": 0.08838732540607452,
+            "mse": 0.0018953364342451096,
+            "psnr_db": 27.22313690185547,
+            "ssim": 0.9250156283378601
+          },
+          {
+            "frame": 48,
+            "lpips": 0.07687242329120636,
+            "mse": 0.0017214014660567045,
+            "psnr_db": 27.64118003845215,
+            "ssim": 0.9299033284187317
+          },
+          {
+            "frame": 56,
+            "lpips": 0.07976628094911575,
+            "mse": 0.0015819983091205359,
+            "psnr_db": 28.00794219970703,
+            "ssim": 0.9252094626426697
+          }
+        ],
+        "psnr_db": 28.615798950195312,
+        "ssim": 0.9366499185562134
+      },
+      "target_frames": [
+        1,
+        8,
+        16,
+        24,
+        32,
+        40,
+        48,
+        56
+      ],
+      "target_used_for_gradient": false,
+      "target_used_for_selection": false
+    },
+    {
+      "adaptation": {
+        "codec_initialization_seconds": 0.06739337323233485,
+        "feature_extraction_seconds_excluded": 0.21055607497692108,
+        "max_surrogate_decode_error": 0.0,
+        "optimization_and_selection_seconds": 37.650983970146626,
+        "oracle_trace": [],
+        "peak_allocated_bytes": 2912417792,
+        "peak_reserved_bytes": 2942304256,
+        "rate_gradient_audit": {
+          "contract_id": "scene_residual_sga_plus_likelihood.v1",
+          "excluded_fields": {
+            "lowrank_mean": "fixed-size FP16 payload; rate is value-independent",
+            "scene_lowrank_basis": "fixed during ITT; fixed-size q8 payload"
+          },
+          "fields": {
+            "lowrank_scores": {
+              "finite": true,
+              "max_abs_gradient": 253.257568359375,
+              "nonzero_gradient_scalars": 130787,
+              "scalars": 131072,
+              "status": "PASS"
+            },
+            "residual_y": {
+              "finite": true,
+              "max_abs_gradient": 1063.87109375,
+              "nonzero_gradient_scalars": 324337,
+              "scalars": 327680,
+              "status": "PASS"
+            },
+            "residual_z": {
+              "finite": true,
+              "max_abs_gradient": 3324.89599609375,
+              "nonzero_gradient_scalars": 46773,
+              "scalars": 49152,
+              "status": "PASS"
+            }
+          },
+          "status": "PASS"
+        },
+        "receiver_subprocess_seconds": 11.022851351182908,
+        "reported_checkpoints": {},
+        "selected_target_psnr_db": null,
+        "selected_updates": 500,
+        "total_codec_seconds": 37.71837734337896,
+        "trace": [
+          {
+            "estimated_total_bpga": 0.6053769588470459,
+            "lpips": 0.22342482209205627,
+            "mse": 0.005245093256235123,
+            "total": 0.024165159091353416,
+            "updates": 0
+          },
+          {
+            "estimated_total_bpga": 0.6023454666137695,
+            "lpips": 0.169890359044075,
+            "mse": 0.004062051419168711,
+            "total": 0.020266592502593994,
+            "updates": 25
+          },
+          {
+            "estimated_total_bpga": 0.6001330614089966,
+            "lpips": 0.14776408672332764,
+            "mse": 0.003529953770339489,
+            "total": 0.01859986037015915,
+            "updates": 50
+          },
+          {
+            "estimated_total_bpga": 0.5985063910484314,
+            "lpips": 0.14053945243358612,
+            "mse": 0.0033935047686100006,
+            "total": 0.018081359565258026,
+            "updates": 75
+          },
+          {
+            "estimated_total_bpga": 0.5973519682884216,
+            "lpips": 0.13649585843086243,
+            "mse": 0.0033727954141795635,
+            "total": 0.017843693494796753,
+            "updates": 100
+          },
+          {
+            "estimated_total_bpga": 0.5958887934684753,
+            "lpips": 0.1292130947113037,
+            "mse": 0.0032004439271986485,
+            "total": 0.01728847622871399,
+            "updates": 125
+          },
+          {
+            "estimated_total_bpga": 0.594883143901825,
+            "lpips": 0.12696750462055206,
+            "mse": 0.0031767699401825666,
+            "total": 0.017139649018645287,
+            "updates": 150
+          },
+          {
+            "estimated_total_bpga": 0.5937566161155701,
+            "lpips": 0.12084922194480896,
+            "mse": 0.0030615655705332756,
+            "total": 0.01670411042869091,
+            "updates": 175
+          },
+          {
+            "estimated_total_bpga": 0.5923628807067871,
+            "lpips": 0.11638849973678589,
+            "mse": 0.0028584913816303015,
+            "total": 0.016260161995887756,
+            "updates": 200
+          },
+          {
+            "estimated_total_bpga": 0.590557873249054,
+            "lpips": 0.11452528834342957,
+            "mse": 0.0027915274258702993,
+            "total": 0.016076931729912758,
+            "updates": 225
+          },
+          {
+            "estimated_total_bpga": 0.5896539092063904,
+            "lpips": 0.10999235510826111,
+            "mse": 0.0026571236085146666,
+            "total": 0.015704311430454254,
+            "updates": 250
+          },
+          {
+            "estimated_total_bpga": 0.5884988307952881,
+            "lpips": 0.10429002344608307,
+            "mse": 0.0025589363649487495,
+            "total": 0.015306222252547741,
+            "updates": 275
+          },
+          {
+            "estimated_total_bpga": 0.5877590775489807,
+            "lpips": 0.10068877041339874,
+            "mse": 0.0024543418549001217,
+            "total": 0.015012096613645554,
+            "updates": 300
+          },
+          {
+            "estimated_total_bpga": 0.5870229005813599,
+            "lpips": 0.09584712237119675,
+            "mse": 0.002271931851282716,
+            "total": 0.014578181318938732,
+            "updates": 325
+          },
+          {
+            "estimated_total_bpga": 0.5865168571472168,
+            "lpips": 0.0939226821064949,
+            "mse": 0.0023233366664499044,
+            "total": 0.01452688593417406,
+            "updates": 350
+          },
+          {
+            "estimated_total_bpga": 0.5859889388084412,
+            "lpips": 0.09095275402069092,
+            "mse": 0.002123916056007147,
+            "total": 0.014172212220728397,
+            "updates": 375
+          },
+          {
+            "estimated_total_bpga": 0.5857012271881104,
+            "lpips": 0.08887394517660141,
+            "mse": 0.002031872980296612,
+            "total": 0.01397254504263401,
+            "updates": 400
+          },
+          {
+            "estimated_total_bpga": 0.5854450464248657,
+            "lpips": 0.08691258728504181,
+            "mse": 0.0019851161632686853,
+            "total": 0.013824441470205784,
+            "updates": 425
+          },
+          {
+            "estimated_total_bpga": 0.5852822065353394,
+            "lpips": 0.08431003987789154,
+            "mse": 0.001907713245600462,
+            "total": 0.013614827767014503,
+            "updates": 450
+          },
+          {
+            "estimated_total_bpga": 0.5851323008537292,
+            "lpips": 0.08471024036407471,
+            "mse": 0.0019436131697148085,
+            "total": 0.013668818399310112,
+            "updates": 475
+          },
+          {
+            "estimated_total_bpga": 0.5850752592086792,
+            "lpips": 0.08359921723604202,
+            "mse": 0.0019113695016130805,
+            "total": 0.013580294325947762,
+            "updates": 500
+          }
+        ],
+        "trainable_parameters": 508640
+      },
+      "bitstream": {
+        "bytes": 141400,
+        "headers": {
+          "base": {
+            "cdf_sha256": "2246b1d67f44f1b01aabc3a53baa30c391226318ab5e33b6689f057807002849",
+            "cdf_transmitted_per_scene": false,
+            "format": "M3OBBASE observable q8 low-rank base",
+            "geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+            "metadata_coder": "zlib level 9",
+            "stream_bytes": {
+              "basis_q8": 16672,
+              "container": 120252,
+              "metadata": 1812,
+              "score_q8": 101736
+            },
+            "symbol_coder": "CompressAI rANS"
+          },
+          "combined": {
+            "base_bytes": 120252,
+            "container_bytes": 141400,
+            "format": "M3HPCODE",
+            "residual_bytes": 21116
+          },
+          "receiver_component_errors": {
+            "base_observable_max_abs": 0.0,
+            "residual_observable_max_abs": 0.0
+          },
+          "residual": {
+            "container_bytes": 21116,
+            "format": "M3HPRANS mean-scale hyperprior",
+            "model_fingerprint": "f6e0c26b0759b5b8ad949218dc7b91ccd567c8b027c1a01e25d469cc061fbea8",
+            "rans_bytes": 21036
+          }
+        },
+        "path": "/ceph_data/jihyoun0403/vml/NFC-GS-Hybrid-Optimization-artifacts/remote-followup16/results/remote_followup_16gpu_50k/scene_lowrank_rank32_multiscale1d/lambda_0p0256/final_50k/sga_plus_500/sga_plus_nfcgs_recipe/c0p5/bitstreams/poor_bf3598d725ce7cf4.m3hp",
+        "sha256": "04505c65739afc5546a2ce790afa14652d50c39b27923362bc72f4561cac13ae"
+      },
+      "context": {
+        "lpips": 0.08345279097557068,
+        "mse": 0.0019006183138117194,
+        "per_view": [
+          {
+            "frame": 0,
+            "lpips": 0.08933140337467194,
+            "mse": 0.003107559634372592,
+            "psnr_db": 25.075807571411133,
+            "ssim": 0.8396981358528137
+          },
+          {
+            "frame": 29,
+            "lpips": 0.06730381399393082,
+            "mse": 0.0016650373581796885,
+            "psnr_db": 27.7857608795166,
+            "ssim": 0.8982964158058167
+          },
+          {
+            "frame": 52,
+            "lpips": 0.06513634324073792,
+            "mse": 0.0014145758468657732,
+            "psnr_db": 28.493738174438477,
+            "ssim": 0.9018529057502747
+          },
+          {
+            "frame": 91,
+            "lpips": 0.07482943683862686,
+            "mse": 0.0014501565601676702,
+            "psnr_db": 28.38585090637207,
+            "ssim": 0.8931325078010559
+          },
+          {
+            "frame": 112,
+            "lpips": 0.0790788009762764,
+            "mse": 0.0016313341911882162,
+            "psnr_db": 27.874568939208984,
+            "ssim": 0.8856828212738037
+          },
+          {
+            "frame": 135,
+            "lpips": 0.09721382707357407,
+            "mse": 0.002270678523927927,
+            "psnr_db": 26.438444137573242,
+            "ssim": 0.8554977774620056
+          },
+          {
+            "frame": 161,
+            "lpips": 0.10188764333724976,
+            "mse": 0.0019248658791184425,
+            "psnr_db": 27.15599822998047,
+            "ssim": 0.8568160533905029
+          },
+          {
+            "frame": 199,
+            "lpips": 0.09284105896949768,
+            "mse": 0.0017407381674274802,
+            "psnr_db": 27.592666625976562,
+            "ssim": 0.8703396916389465
+          }
+        ],
+        "psnr_db": 27.350353240966797,
+        "ssim": 0.8751645088195801
+      },
+      "context_frames": [
+        0,
+        29,
+        52,
+        91,
+        112,
+        135,
+        161,
+        199
+      ],
+      "difficulty": "poor",
+      "receiver_camera_query_contains_target_rgb": false,
+      "receiver_cross_process": {
+        "atol": 1e-07,
+        "decoded_base_shape": [
+          4096,
+          736
+        ],
+        "decoded_residual_shape": [
+          4096,
+          736
+        ],
+        "receiver_audit": {
+          "bitstream_sha256": "04505c65739afc5546a2ce790afa14652d50c39b27923362bc72f4561cac13ae",
+          "codec_checkpoint_sha256": "50ef16b63909c556584c07835ca842c1d71b61c807693314bd6c1143391eb05a",
+          "encoded_geometry_basis_sha256": "683734d211100680cde0164863e1c548879f4e34db7c966179a1b36629b74b58",
+          "geometry_sha256": "d17122b2c88485fa24820a5e5c60b8875653531dc0dc2d571a84f86641f7815c",
+          "official_checkpoint_sha256": "90be09504fa046792dedfe2d1b17e00bb64a5bf95da477d71e233be01df72a42",
+          "runtime_basis_matches_encoded_bytes": false,
+          "runtime_geometry_basis_sha256": "caa9e6398e0658459ed68df393cbf03b7d1c8220a3501599b5abb8fb116ebbc1",
+          "texture_sha256": "fa833d873b55e67833b70c36e9eb0fac9f7558346d70626e97459c710792af61"
+        },
+        "rtol": 1e-06,
+        "synthesis_allclose": {
+          "geometry_tokens": true,
+          "means": true,
+          "opacities": true,
+          "reg": true,
+          "rotations": true,
+          "scales": true,
+          "sh": true,
+          "texture_tokens": true
+        },
+        "synthesis_max_abs_error": {
+          "geometry_tokens": 0.0,
+          "means": 0.0,
+          "opacities": 0.0,
+          "reg": 0.0,
+          "rotations": 0.0,
+          "scales": 0.0,
+          "sh": 0.0,
+          "texture_tokens": 0.0
+        },
+        "target_rendered_in_receiver": true
+      },
+      "receiver_inputs": [
+        "official_globalsplat_checkpoint",
+        "shared_codec_checkpoint",
+        "scene_bitstream",
+        "target_cameras_without_rgb"
+      ],
+      "receiver_subprocess": true,
+      "scene": "bf3598d725ce7cf4",
+      "target": {
+        "lpips": 0.11887343227863312,
+        "mse": 0.002724756021052599,
+        "per_view": [
+          {
+            "frame": 1,
+            "lpips": 0.10323233157396317,
+            "mse": 0.003974172752350569,
+            "psnr_db": 24.00753402709961,
+            "ssim": 0.8414910435676575
+          },
+          {
+            "frame": 25,
+            "lpips": 0.09209351241588593,
+            "mse": 0.0019350372022017837,
+            "psnr_db": 27.133106231689453,
+            "ssim": 0.8925086855888367
+          },
+          {
+            "frame": 50,
+            "lpips": 0.08543700724840164,
+            "mse": 0.0014887265861034393,
+            "psnr_db": 28.2718505859375,
+            "ssim": 0.8968968391418457
+          },
+          {
+            "frame": 75,
+            "lpips": 0.11002704501152039,
+            "mse": 0.0020193990785628557,
+            "psnr_db": 26.947776794433594,
+            "ssim": 0.8718883991241455
+          },
+          {
+            "frame": 100,
+            "lpips": 0.10981306433677673,
+            "mse": 0.0019157789647579193,
+            "psnr_db": 27.17654800415039,
+            "ssim": 0.8738767504692078
+          },
+          {
+            "frame": 125,
+            "lpips": 0.1262533962726593,
+            "mse": 0.0025153309106826782,
+            "psnr_db": 25.994050979614258,
+            "ssim": 0.8438641428947449
+          },
+          {
+            "frame": 150,
+            "lpips": 0.1653761863708496,
+            "mse": 0.005234583280980587,
+            "psnr_db": 22.811180114746094,
+            "ssim": 0.8117592930793762
+          },
+          {
+            "frame": 175,
+            "lpips": 0.1587548851966858,
+            "mse": 0.002715020440518856,
+            "psnr_db": 25.662269592285156,
+            "ssim": 0.8370153903961182
+          }
+        ],
+        "psnr_db": 26.000539779663086,
+        "ssim": 0.8586626052856445
+      },
+      "target_frames": [
+        1,
+        25,
+        50,
+        75,
+        100,
+        125,
+        150,
+        175
+      ],
+      "target_used_for_gradient": false,
+      "target_used_for_selection": false
+    }
+  ],
+  "shared_codec": {
+    "lambda_distortion": null,
+    "lambda_render": null,
+    "model_fingerprint": "f6e0c26b0759b5b8ad949218dc7b91ccd567c8b027c1a01e25d469cc061fbea8",
+    "path": "/ceph_data/jihyoun0403/vml/NFC-GS-Hybrid-Optimization-artifacts/remote-followup16/checkpoints/remote_followup_16gpu_50k/scene_lowrank_rank32_multiscale1d/lambda_0p0256/step50000.ckpt",
+    "pretraining_split": "RE10K train split",
+    "pretraining_target_views_used": 8,
+    "rendering_aware_shared_training": true,
+    "sha256": "50ef16b63909c556584c07835ca842c1d71b61c807693314bd6c1143391eb05a",
+    "shared_checkpoint_bytes_excluded_from_scene_rate": true
+  }
+}

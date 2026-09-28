@@ -1,0 +1,572 @@
+{
+  "schema": "m05.target_blind_scene_latent_tuning.v1",
+  "generated_at": "2026-08-25T07:55:24.774516+09:00",
+  "reproducibility": {
+    "seed": 403,
+    "torch_manual_seed": true,
+    "torch_cuda_manual_seed_all_per_scene": true,
+    "cuda_matmul_tf32": false,
+    "cudnn_tf32": false,
+    "cudnn_benchmark": false,
+    "cudnn_deterministic": true,
+    "torch_deterministic_algorithms": false,
+    "custom_cuda_kernel_bit_exactness": "not_guaranteed"
+  },
+  "protocol": "RE10K indexed subset; tune context RGB only; evaluate target after selection",
+  "optimized_state": [
+    "mean",
+    "score",
+    "residual_y",
+    "residual_z"
+  ],
+  "shared_model_weights_frozen": true,
+  "target_used_for_gradient": false,
+  "target_used_for_selection": false,
+  "target_oracle_every": null,
+  "objective": "context_MSE + 0.05*LPIPS + lambda*estimated_BPGA",
+  "rate_gradient_contract": {
+    "id": "sga_plus_relaxed_likelihood.v1",
+    "optimization_forward_hard_symbols": false,
+    "actual_bitstream_evaluation_uses_hard_symbols": true,
+    "direct_symbol_rate_gradients_verified": true,
+    "mean_rate_gradient_excluded": "fixed-size FP16 payload",
+    "scene_audits_passed": true,
+    "implementation_sha256": {
+      "evaluator": "ff4a469fcf5cf8359a5b574233b09b31ef0a9c44dfd66f5ccbef2611f9b9d88d",
+      "codec": "5af69495907194ecbfdca677522d52c2dff35fdcf6319b96eec28e445092f730",
+      "naive_2d_codec": "b58206f07ebe9c15d6766d85d49fda356fb058664102a97697d2cc1ae32c2cab",
+      "score_entropy_models": "f78d0add78c0fe461da81847784e61ec69f6c024e63dbf970220281f0382a057",
+      "residual_entropy_model": "bc1cac9f0ec56cfa40448ac0f9241ea2f8a7953a993419fa2ebb488f83bb7fe9"
+    }
+  },
+  "rate_lambda": 0.0004,
+  "optimization_quantizer": "sga_plus",
+  "sga_plus": {
+    "logits": "ssl",
+    "rounding_classes": 2,
+    "ssl_scale": 2.3,
+    "three_class_factor": 0.98,
+    "three_class_power": 1.5,
+    "temperature_schedule": "paper_exp_cap",
+    "temperature_initial": 1.0,
+    "temperature_min": 0.0001,
+    "anneal_rate": 0.001
+  },
+  "learning_rates": {
+    "mean": 0.001,
+    "score": 0.005,
+    "residual_y": 0.005,
+    "residual_z": 0.005
+  },
+  "lr_schedule": "constant",
+  "lr_warmup_steps": 0,
+  "lr_min_scale": 0.05,
+  "lr_schedule_horizon": 500,
+  "optimizer": {
+    "name": "adam",
+    "beta1": 0.9,
+    "beta2": 0.999,
+    "eps": 1e-08,
+    "weight_decay": 0.0
+  },
+  "lr_milestones": [],
+  "evaluation_milestones": [],
+  "lr_gamma": 0.1,
+  "steps": 500,
+  "receiver_subprocess": true,
+  "fresh_receiver_audits": 1,
+  "receiver_audit_scene_limit": 1,
+  "checkpoint": {
+    "path": "/data/jihyoun/vml/NFC-GS-Hybrid-Optimization/models/globalsplat_feature_codec/checkpoint_cache/recent_remote_50k_20260825/e2e_gaussian_decoder_lr1e6/step50000.ckpt",
+    "sha256": "b2a3e70202b7e4f379c44a6143ced386c019eb0d925a4e4f4f6cb4a556c26d12"
+  },
+  "codec_structure": {
+    "family": "observable_lowrank_1d",
+    "codec_split_point": "post_final_mixer",
+    "rank": 56,
+    "morton_sort": true,
+    "scene_centering": true,
+    "basis_partition": "joint",
+    "basis_parameterization": "untied_synthesis",
+    "synthesis_mlp_hidden": 64,
+    "post_reconstruction_adapter": "none",
+    "post_reconstruction_texture_hidden": 0,
+    "post_reconstruction_geometry_hidden": 0,
+    "post_reconstruction_joint_hidden": 0,
+    "texture_rank": null,
+    "score_transform": "identity",
+    "score_entropy_model": "factorized",
+    "score_delta_block": 16,
+    "residual_variant": "multiscale1d"
+  },
+  "aggregate": {
+    "step_0": {
+      "psnr_db": 29.271595001220703,
+      "ssim": 0.9229714870452881,
+      "lpips": 0.1052960455417633,
+      "mse": 0.00119845662266016,
+      "actual_bytes_per_scene": 231888
+    },
+    "fixed_final": {
+      "psnr_db": 35.644954681396484,
+      "ssim": 0.9645135402679443,
+      "lpips": 0.04091053456068039,
+      "mse": 0.00027439830591902137,
+      "actual_bytes_per_scene": 232652
+    },
+    "context_best": {
+      "psnr_db": 35.644954681396484,
+      "ssim": 0.9645135402679443,
+      "lpips": 0.04091053456068039,
+      "mse": 0.00027439830591902137,
+      "actual_bytes_per_scene": 232652
+    }
+  },
+  "scenes": [
+    {
+      "scene": "0c609c435b1f7114",
+      "difficulty": "subset",
+      "context_frames": [
+        0,
+        6,
+        13,
+        26,
+        33,
+        40,
+        52,
+        65,
+        78,
+        94,
+        102,
+        112
+      ],
+      "target_frames": [
+        1,
+        15,
+        28,
+        42,
+        55,
+        68,
+        81,
+        93
+      ],
+      "target_used_for_gradient": false,
+      "target_used_for_selection": false,
+      "adaptation": {
+        "context_best_step": 500,
+        "target_oracle_step": null,
+        "target_oracle_psnr_surrogate_db": null,
+        "oracle_trace": [],
+        "trace": [
+          {
+            "step": 0,
+            "objective": 0.007376370020210743,
+            "mse": 0.0013745990581810474,
+            "lpips": 0.11236723512411118,
+            "estimated_bits": 1853123.375,
+            "rate_bpga": 0.9585226774215698
+          },
+          {
+            "step": 25,
+            "objective": 0.00342587660998106,
+            "mse": 0.000479822774650529,
+            "lpips": 0.05125071853399277,
+            "estimated_bits": 1853649.625,
+            "rate_bpga": 0.958794891834259,
+            "temperature": 0.9753099083900452
+          },
+          {
+            "step": 50,
+            "objective": 0.0029249764047563076,
+            "mse": 0.0003958908491767943,
+            "lpips": 0.042903196066617966,
+            "estimated_bits": 1855621.0,
+            "rate_bpga": 0.9598145484924316,
+            "temperature": 0.951229453086853
+          },
+          {
+            "step": 75,
+            "objective": 0.002639397280290723,
+            "mse": 0.0003403447917662561,
+            "lpips": 0.03830216825008392,
+            "estimated_bits": 1855709.0,
+            "rate_bpga": 0.95986008644104,
+            "temperature": 0.9277434945106506
+          },
+          {
+            "step": 100,
+            "objective": 0.0024945600889623165,
+            "mse": 0.00031831569503992796,
+            "lpips": 0.0358421765267849,
+            "estimated_bits": 1856635.75,
+            "rate_bpga": 0.9603394269943237,
+            "temperature": 0.904837429523468
+          },
+          {
+            "step": 125,
+            "objective": 0.0023748772218823433,
+            "mse": 0.00029966607689857483,
+            "lpips": 0.03382045030593872,
+            "estimated_bits": 1856891.75,
+            "rate_bpga": 0.9604718685150146,
+            "temperature": 0.8824968934059143
+          },
+          {
+            "step": 150,
+            "objective": 0.00229564867913723,
+            "mse": 0.0002847592404577881,
+            "lpips": 0.03253428637981415,
+            "estimated_bits": 1856826.5,
+            "rate_bpga": 0.960438072681427,
+            "temperature": 0.8607079982757568
+          },
+          {
+            "step": 175,
+            "objective": 0.002254978520795703,
+            "mse": 0.0002816713822539896,
+            "lpips": 0.031781598925590515,
+            "estimated_bits": 1857077.5,
+            "rate_bpga": 0.9605679512023926,
+            "temperature": 0.8394570350646973
+          },
+          {
+            "step": 200,
+            "objective": 0.0021952663082629442,
+            "mse": 0.0002710655389819294,
+            "lpips": 0.030797293409705162,
+            "estimated_bits": 1857604.125,
+            "rate_bpga": 0.9608403444290161,
+            "temperature": 0.8187307715415955
+          },
+          {
+            "step": 225,
+            "objective": 0.002158700255677104,
+            "mse": 0.0002661982725840062,
+            "lpips": 0.030162256211042404,
+            "estimated_bits": 1857859.625,
+            "rate_bpga": 0.9609724879264832,
+            "temperature": 0.7985162138938904
+          },
+          {
+            "step": 250,
+            "objective": 0.0021268450655043125,
+            "mse": 0.0002581414591986686,
+            "lpips": 0.02968563698232174,
+            "estimated_bits": 1858018.5,
+            "rate_bpga": 0.9610546827316284,
+            "temperature": 0.7788007855415344
+          },
+          {
+            "step": 275,
+            "objective": 0.0020882876124233007,
+            "mse": 0.000254717975622043,
+            "lpips": 0.028984200209379196,
+            "estimated_bits": 1857717.375,
+            "rate_bpga": 0.9608988761901855,
+            "temperature": 0.7595721483230591
+          },
+          {
+            "step": 300,
+            "objective": 0.0020567821338772774,
+            "mse": 0.00025080316117964685,
+            "lpips": 0.028431888669729233,
+            "estimated_bits": 1857838.0,
+            "rate_bpga": 0.9609612822532654,
+            "temperature": 0.740818202495575
+          },
+          {
+            "step": 325,
+            "objective": 0.00203712098300457,
+            "mse": 0.00024790424504317343,
+            "lpips": 0.028096025809645653,
+            "estimated_bits": 1857987.5,
+            "rate_bpga": 0.9610386490821838,
+            "temperature": 0.7225273847579956
+          },
+          {
+            "step": 350,
+            "objective": 0.00201186235062778,
+            "mse": 0.00024317085626535118,
+            "lpips": 0.027684886008501053,
+            "estimated_bits": 1858140.75,
+            "rate_bpga": 0.9611178636550903,
+            "temperature": 0.7046880722045898
+          },
+          {
+            "step": 375,
+            "objective": 0.002005102578550577,
+            "mse": 0.00024360809766221792,
+            "lpips": 0.027538878843188286,
+            "estimated_bits": 1858640.0,
+            "rate_bpga": 0.9613761305809021,
+            "temperature": 0.687289297580719
+          },
+          {
+            "step": 400,
+            "objective": 0.0019790041260421276,
+            "mse": 0.00023992318892851472,
+            "lpips": 0.027089407667517662,
+            "estimated_bits": 1858931.375,
+            "rate_bpga": 0.9615268111228943,
+            "temperature": 0.6703200340270996
+          },
+          {
+            "step": 425,
+            "objective": 0.001966672483831644,
+            "mse": 0.00023781189520377666,
+            "lpips": 0.026884686201810837,
+            "estimated_bits": 1859005.625,
+            "rate_bpga": 0.9615652561187744,
+            "temperature": 0.6537697911262512
+          },
+          {
+            "step": 450,
+            "objective": 0.0019534933380782604,
+            "mse": 0.00023619960120413452,
+            "lpips": 0.02665398083627224,
+            "estimated_bits": 1858854.125,
+            "rate_bpga": 0.9614868760108948,
+            "temperature": 0.6376281380653381
+          },
+          {
+            "step": 475,
+            "objective": 0.0019496527966111898,
+            "mse": 0.00023579779372084886,
+            "lpips": 0.026583991944789886,
+            "estimated_bits": 1859146.875,
+            "rate_bpga": 0.961638331413269,
+            "temperature": 0.6218850612640381
+          },
+          {
+            "step": 500,
+            "objective": 0.0019360135775059462,
+            "mse": 0.00023294462880585343,
+            "lpips": 0.026366662234067917,
+            "estimated_bits": 1859536.25,
+            "rate_bpga": 0.9618397355079651,
+            "temperature": 0.6065306663513184
+          }
+        ],
+        "elapsed_seconds": 57.131074047181755,
+        "peak_memory": {
+          "allocated_bytes": 3882225152,
+          "reserved_bytes": 3902799872
+        },
+        "shapes": {
+          "mean": [
+            1,
+            736
+          ],
+          "score": [
+            1,
+            4096,
+            56
+          ],
+          "residual_y": [
+            1,
+            320,
+            1,
+            1024
+          ],
+          "residual_z": [
+            1,
+            192,
+            1,
+            256
+          ]
+        },
+        "trainable_scalars": 606944,
+        "rate_gradient_audit": {
+          "contract_id": "sga_plus_relaxed_likelihood.v1",
+          "status": "PASS",
+          "fields": {
+            "score": {
+              "status": "PASS",
+              "bit_field": "score",
+              "scalars": 229376,
+              "finite": true,
+              "nonzero_gradient_scalars": 229005,
+              "max_abs_gradient": 80.38706970214844
+            },
+            "residual_y": {
+              "status": "PASS",
+              "bit_field": "residual_y",
+              "scalars": 327680,
+              "finite": true,
+              "nonzero_gradient_scalars": 327080,
+              "max_abs_gradient": 199.68296813964844
+            },
+            "residual_z": {
+              "status": "PASS",
+              "bit_field": "residual_z",
+              "scalars": 49152,
+              "finite": true,
+              "nonzero_gradient_scalars": 48979,
+              "max_abs_gradient": 554.8622436523438
+            }
+          },
+          "excluded_fields": {
+            "mean": "fixed-size FP16 payload; rate is value-independent"
+          }
+        },
+        "optimization_quantizer": "sga_plus",
+        "temperature_schedule": {
+          "kind": "paper_exp_cap",
+          "initial": 1.0,
+          "minimum": 0.0001,
+          "anneal_rate": 0.001,
+          "final": 0.6065306663513184
+        }
+      },
+      "evaluations": {
+        "step_0": {
+          "actual_rate": {
+            "format": "e2e_m03_v1",
+            "checksum_scope": "header_metadata_and_payload",
+            "actual_total_bytes": 231888,
+            "header_bytes": 80,
+            "payload_bytes": 231808,
+            "stream_bytes": {
+              "mean_fp16": 1472,
+              "score": 178004,
+              "residual": 52332
+            },
+            "points": 4096,
+            "observable_channels": 736,
+            "rank": 56,
+            "split_point": "post_final_mixer",
+            "actual_bits": 1855104,
+            "bits_per_gaussian": 56.61328125
+          },
+          "metrics": {
+            "context": {
+              "psnr_db": 28.806325912475586,
+              "ssim": 0.9153726100921631,
+              "lpips": 0.11094014346599579,
+              "mse": 0.0013599995290860534
+            },
+            "target": {
+              "psnr_db": 29.271595001220703,
+              "ssim": 0.9229714870452881,
+              "lpips": 0.1052960455417633,
+              "mse": 0.00119845662266016
+            }
+          },
+          "receiver_audit": null,
+          "timing_seconds": {
+            "entropy_encode": 0.1739325006492436,
+            "receiver_subprocess_decode_and_target_render": 0.0
+          }
+        },
+        "fixed_final": {
+          "actual_rate": {
+            "format": "e2e_m03_v1",
+            "checksum_scope": "header_metadata_and_payload",
+            "actual_total_bytes": 232652,
+            "header_bytes": 80,
+            "payload_bytes": 232572,
+            "stream_bytes": {
+              "mean_fp16": 1472,
+              "score": 178696,
+              "residual": 52404
+            },
+            "points": 4096,
+            "observable_channels": 736,
+            "rank": 56,
+            "split_point": "post_final_mixer",
+            "actual_bits": 1861216,
+            "bits_per_gaussian": 56.7998046875
+          },
+          "metrics": {
+            "context": {
+              "psnr_db": 36.42090606689453,
+              "ssim": 0.9681386351585388,
+              "lpips": 0.026490677148103714,
+              "mse": 0.00023132980277296156
+            },
+            "target": {
+              "psnr_db": 35.644954681396484,
+              "ssim": 0.9645135402679443,
+              "lpips": 0.04091053456068039,
+              "mse": 0.00027439830591902137
+            }
+          },
+          "receiver_audit": null,
+          "timing_seconds": {
+            "entropy_encode": 0.17384313698858023,
+            "receiver_subprocess_decode_and_target_render": 0.0
+          }
+        },
+        "context_best": {
+          "actual_rate": {
+            "format": "e2e_m03_v1",
+            "checksum_scope": "header_metadata_and_payload",
+            "actual_total_bytes": 232652,
+            "header_bytes": 80,
+            "payload_bytes": 232572,
+            "stream_bytes": {
+              "mean_fp16": 1472,
+              "score": 178696,
+              "residual": 52404
+            },
+            "points": 4096,
+            "observable_channels": 736,
+            "rank": 56,
+            "split_point": "post_final_mixer",
+            "actual_bits": 1861216,
+            "bits_per_gaussian": 56.7998046875
+          },
+          "metrics": {
+            "context": {
+              "psnr_db": 36.42090606689453,
+              "ssim": 0.9681386351585388,
+              "lpips": 0.026490677148103714,
+              "mse": 0.00023132980277296156
+            },
+            "target": {
+              "psnr_db": 35.644954681396484,
+              "ssim": 0.9645135402679443,
+              "lpips": 0.04091053456068039,
+              "mse": 0.00027439830591902137
+            }
+          },
+          "receiver_audit": {
+            "entropy_symbols_bit_exact": {
+              "score_symbol": true,
+              "residual_z_symbol": true,
+              "residual_y_symbol": true,
+              "mean_fp16": true
+            },
+            "synthesis_allclose": {
+              "texture_tokens": true,
+              "geometry_observable": true,
+              "means": true,
+              "scales": true,
+              "rotations": true,
+              "sh": true,
+              "opacities": true,
+              "reg": true
+            },
+            "synthesis_max_abs_error": {
+              "texture_tokens": 0.0,
+              "geometry_observable": 0.0,
+              "means": 0.0,
+              "scales": 0.0,
+              "rotations": 0.0,
+              "sh": 0.0,
+              "opacities": 0.0,
+              "reg": 0.0
+            },
+            "rtol": 1e-06,
+            "atol": 1e-07,
+            "target_rendered_in_receiver": true
+          },
+          "timing_seconds": {
+            "entropy_encode": 0.14310910506173968,
+            "receiver_subprocess_decode_and_target_render": 6.802267277613282
+          }
+        }
+      }
+    }
+  ]
+}

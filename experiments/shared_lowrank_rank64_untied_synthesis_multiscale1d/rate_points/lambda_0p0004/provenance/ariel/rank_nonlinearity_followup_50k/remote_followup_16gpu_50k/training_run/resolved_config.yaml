@@ -1,0 +1,75 @@
+checkpointing:
+  every_n_train_steps: 5000
+  milestone_steps:
+  - 35000
+  - 45000
+dataset:
+  augment: true
+  context_gap_warm_up_steps: 2500
+  data_loader_seed: 403
+  dataset_roots:
+  - /data3/local_datasets/re10k
+  exclude_context_from_targets: true
+  extra_views_sampling_strategy: farthest_point
+  far: 100.0
+  image_shape:
+  - 256
+  - 256
+  initial_max_distance_between_context_views: 45
+  initial_max_distance_to_context_views: 0
+  initial_min_distance_between_context_views: 25
+  max_distance_between_context_views: 192
+  max_distance_to_context_views: 0
+  min_distance_between_context_views: 45
+  mvsplat_root: ../../core/third_party/ZPressor/mvsplat
+  name: re10k
+  near: 1.0
+  num_context_views: 12
+  num_target_views: 8
+  scene_scale_factor: 1.0
+  target_gap_warm_up_steps: 0
+  target_views_replace_sample: false
+experiment_name: frozen_shared_rank64_untied_lambda_0p0004_followup50k
+loss:
+  gaussian_attributes: 59
+  inview_weight: 0.01
+  lpips_weight: 0.05
+  mse_weight: 1.0
+  observable_mse_decay_steps: 0
+  observable_mse_weight: 0.0
+  rate_lambda: 0.0004
+  rate_ramp_steps: 0
+model:
+  feature_codec:
+    adapter_hidden: 96
+    basis_parameterization: untied_synthesis
+    geometry_observable_channels: 224
+    rank: 64
+    residual_M: 320
+    residual_N: 192
+    residual_variant: multiscale1d
+  freeze_globalsplat: true
+optimizer:
+  batch_size_per_gpu: 8
+  codec_weight_decay: 0.0
+  globalsplat_weight_decay: 0.0
+  lr: 0.0001
+  lr_gamma: 0.1
+  lr_milestones:
+  - 35000
+  - 45000
+  name: adam
+  num_workers: 8
+  prefetch_factor: 2
+  quantile_training: deterministic
+  quantile_update_interval: 500
+  warmup_steps: 0
+seed: 111123
+stage: frozen_rd
+trainer:
+  accumulate_grad_batches: 1
+  devices: 1
+  gradient_clip_val: 0.5
+  log_every_n_steps: 20
+  max_steps: 50000
+  precision: bf16-mixed

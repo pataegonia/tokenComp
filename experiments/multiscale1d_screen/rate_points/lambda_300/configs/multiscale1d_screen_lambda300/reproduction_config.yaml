@@ -1,0 +1,52 @@
+schema: globalsplat_feature_codec.reproduction.v1
+method: multiscale1d
+working_directory: models/globalsplat_feature_codec
+environment: GSC_Seung
+globalsplat_frozen: true
+architecture: {variant: multiscale1d, N: 192, M: 320, adapter_hidden: 96}
+stage_chain:
+  - name: morton1d_lambda100
+    steps: 5000
+    initializer: checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt
+    final: checkpoints/multiscale1d/morton1d_lambda100/step5000.ckpt
+  - name: screen_lambda300
+    steps: 750
+    initializer: checkpoints/multiscale1d/morton1d_lambda100/step5000.ckpt
+    final: checkpoints/multiscale1d/screen_lambda300/step750.ckpt
+  - name: promoted_lambda30
+    steps: 3000
+    initializer: checkpoints/multiscale1d/screen_lambda300/step750.ckpt
+    final: checkpoints/multiscale1d/lambda30_from_screen_step750/step3000.ckpt
+  - name: promoted_lambda100
+    steps: 3000
+    initializer: checkpoints/multiscale1d/screen_lambda300/step750.ckpt
+    final: checkpoints/multiscale1d/lambda100_from_screen_step750/step3000.ckpt
+cache_command: >-
+  CUDA_VISIBLE_DEVICES=<gpu> conda run -n GSC_Seung python
+  methods/multiscale1d/scripts/extract_render_cache.py
+  --checkpoint checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt
+  --dataset-root /data/data/re10k
+  --output runs/cache/re10k_train_ctx8_s64_rendering_rank64
+training_command_template: >-
+  CUDA_VISIBLE_DEVICES=<gpu> conda run -n GSC_Seung python
+  methods/multiscale1d/scripts/train_rendering_aware_codec.py
+  --checkpoint checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt
+  --cache runs/cache/re10k_train_ctx8_s64_rendering_rank64
+  --variant multiscale1d --warm-start <initializer> --steps <steps>
+  --lambda-render <lambda> --output runs/multiscale1d/<stage>
+evaluation:
+  online_steps: 500
+  learning_rate: 0.002
+  rate_weight: 0
+  state_selection: target_oracle
+  command_template: >-
+    CUDA_VISIBLE_DEVICES=<gpu> conda run -n GSC_Seung python
+    methods/multiscale1d/scripts/run_primary3_hyperprior.py
+    --checkpoint checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt
+    --codec-checkpoint <lambda30_or_lambda100_step3000.ckpt>
+    --steps 500 --lr 2e-3 --rate-weight 0
+    --state-selection target_oracle --oracle-every 10
+    --dataset-root /data/data/re10k --output runs/multiscale1d/<evaluation>
+retained_results:
+  - results/figure_260818/multiscale1d_lambda30_oracle500
+  - results/figure_260818/multiscale1d_lambda100_oracle500

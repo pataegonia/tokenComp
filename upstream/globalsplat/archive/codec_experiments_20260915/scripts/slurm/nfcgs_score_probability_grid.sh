@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Reconstruction-locked score probability models at both paper lambdas.
+select_score_probability_condition() {
+  local task="$1"
+  case "${task}" in
+    0|1) SCORE_SPATIAL_ENTROPY=shared;            ENTROPY_TAG=e0_shared ;;
+    2|3) SCORE_SPATIAL_ENTROPY=split;             ENTROPY_TAG=e1_split ;;
+    4|5) SCORE_SPATIAL_ENTROPY=gaussian;          ENTROPY_TAG=e2_gaussian ;;
+    6|7) SCORE_SPATIAL_ENTROPY=conditional_scale; ENTROPY_TAG=e3_conditional_scale ;;
+    *) echo "ERROR: score-probability grid expects task id 0 through 7" >&2; return 1 ;;
+  esac
+
+  RATE_LAMBDA=0.0064
+  GRID_TASK_ID=0
+  PARENT_TASK_ID=8
+  if (( task % 2 == 1 )); then
+    RATE_LAMBDA=0.0256
+    GRID_TASK_ID=2
+    PARENT_TASK_ID=9
+  fi
+
+  RANK=56
+  USE_RESIDUAL=true
+  USE_MORTON=true
+  TRANSFORM=nonlinear
+  TRANSFORM_HIDDEN=32
+  SCORE_MEAN_CONDITION=true
+  SCORE_CHANNEL_CONTEXT=true
+  SCORE_SPATIAL_CONTEXT=true
+  SCORE_SPATIAL_PREDICTOR=linear
+  SCORE_SPATIAL_HIDDEN="${SCORE_PROBABILITY_SPATIAL_HIDDEN:-32}"
+  SCORE_SLICE_CHANNELS="${SCORE_PROBABILITY_SLICE_CHANNELS:-16}"
+  SCORE_CONTEXT_HIDDEN="${SCORE_PROBABILITY_CONTEXT_HIDDEN:-64}"
+  PARENT_PRIOR_TAG=m1c1s1
+  LAMBDA_TAG="${RATE_LAMBDA/./p}"
+
+  export RATE_LAMBDA GRID_TASK_ID RANK USE_RESIDUAL USE_MORTON
+  export TRANSFORM TRANSFORM_HIDDEN LAMBDA_TAG ENTROPY_TAG
+  export PARENT_PRIOR_TAG PARENT_TASK_ID
+  export SCORE_MEAN_CONDITION SCORE_CHANNEL_CONTEXT SCORE_SPATIAL_CONTEXT
+  export SCORE_SPATIAL_PREDICTOR SCORE_SPATIAL_ENTROPY SCORE_SPATIAL_HIDDEN
+  export SCORE_SLICE_CHANNELS SCORE_CONTEXT_HIDDEN
+}

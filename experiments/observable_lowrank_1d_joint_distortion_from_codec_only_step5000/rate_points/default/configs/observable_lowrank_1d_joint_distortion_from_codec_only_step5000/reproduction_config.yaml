@@ -1,0 +1,39 @@
+schema: globalsplat_feature_codec.reproduction.v1
+method: observable_lowrank_1d
+working_directory: models/globalsplat_feature_codec/methods/observable_lowrank_1d
+environment: GSC_Seung
+gpus: [4, 5, 6, 7]
+batch_per_gpu: 4
+effective_batch: 16
+objective: D + lambda * R
+shared_basis: shared_basis/re10k_ctx12_s64_t512_rank64.pt
+stage_chain:
+  - {name: codec_only_distortion, config: configs/warmup_distortion.yaml, steps: 5000,
+     initializer: ../../checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt,
+     final: ../../checkpoints/observable_lowrank_1d/codec_only_distortion/step5000.ckpt}
+  - {name: joint_distortion, config: configs/e2e_distortion.yaml, steps: 25000,
+     initializer: ../../checkpoints/observable_lowrank_1d/codec_only_distortion/step5000.ckpt,
+     final: ../../checkpoints/observable_lowrank_1d/joint_distortion_from_codec_only_step5000/step25000.ckpt}
+  - {name: joint_rd_lambda0p0256, config: configs/rd_lambda_0.0256.yaml, steps: 25000,
+     initializer: ../../checkpoints/observable_lowrank_1d/joint_distortion_from_codec_only_step5000/step25000.ckpt,
+     final: ../../checkpoints/observable_lowrank_1d/joint_rd_lambda0p0256_from_joint_distortion_step25000/step25000.ckpt}
+  - {name: joint_rd_lambda0p1024, config: configs/rd_lambda_0.1024.yaml, steps: 25000,
+     initializer: ../../checkpoints/observable_lowrank_1d/joint_distortion_from_codec_only_step5000/step25000.ckpt,
+     final: ../../checkpoints/observable_lowrank_1d/joint_rd_lambda0p1024_from_joint_distortion_step25000/step25000.ckpt}
+training_command: >-
+  CUDA_VISIBLE_DEVICES=4,5,6,7 conda run -n GSC_Seung python scripts/run_training_pipeline.py
+  --run-root ../../runs/observable_lowrank_1d
+evaluation_command_template: >-
+  CUDA_VISIBLE_DEVICES=<gpu> conda run -n GSC_Seung python scripts/evaluate_primary3_exact.py
+  --config <stage-config.yaml> --checkpoint <stage-stepN.ckpt>
+  --receiver-subprocess --output ../../runs/observable_lowrank_1d/<stage>/primary3
+online_tuning:
+  tuned_state: [mean, score, residual_y, residual_z]
+  shared_weights_frozen: true
+  target_rgb_in_backward: false
+  command_template: >-
+    CUDA_VISIBLE_DEVICES=<gpu> conda run -n GSC_Seung python scripts/evaluate_primary3_latent_tuning.py
+    --config <stage-config.yaml> --checkpoint <stage-stepN.ckpt>
+    --steps 1000 --receiver-subprocess
+    --output ../../runs/observable_lowrank_1d/<stage>/primary3_tuning
+retained_results: ../../results/current_m05

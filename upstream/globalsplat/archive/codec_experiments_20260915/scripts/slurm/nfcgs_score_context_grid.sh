@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Four efficient contextual-score priors at two RD operating points.
+select_score_context_condition() {
+  local task="$1"
+  case "${task}" in
+    0|1) SCORE_MEAN_CONDITION=true; SCORE_CHANNEL_CONTEXT=false; SCORE_SPATIAL_CONTEXT=false; PRIOR_TAG=m1c0s0 ;;
+    2|3) SCORE_MEAN_CONDITION=true; SCORE_CHANNEL_CONTEXT=true;  SCORE_SPATIAL_CONTEXT=false; PRIOR_TAG=m1c1s0 ;;
+    4|5) SCORE_MEAN_CONDITION=true; SCORE_CHANNEL_CONTEXT=false; SCORE_SPATIAL_CONTEXT=true;  PRIOR_TAG=m1c0s1 ;;
+    6|7) SCORE_MEAN_CONDITION=true; SCORE_CHANNEL_CONTEXT=true;  SCORE_SPATIAL_CONTEXT=true;  PRIOR_TAG=m1c1s1 ;;
+    *) echo "ERROR: score-context grid expects task id 0 through 7" >&2; return 1 ;;
+  esac
+  if (( task % 2 == 0 )); then
+    RATE_LAMBDA=0.0064
+    GRID_TASK_ID=0
+  else
+    RATE_LAMBDA=0.0256
+    GRID_TASK_ID=2
+  fi
+  RANK=56
+  USE_RESIDUAL=true
+  USE_MORTON=true
+  TRANSFORM=linear
+  TRANSFORM_HIDDEN=32
+  SCORE_SLICE_CHANNELS="${SCORE_SLICE_CHANNELS:-16}"
+  SCORE_CONTEXT_HIDDEN="${SCORE_CONTEXT_HIDDEN:-64}"
+  LAMBDA_TAG="${RATE_LAMBDA/./p}"
+  export SCORE_MEAN_CONDITION SCORE_CHANNEL_CONTEXT SCORE_SPATIAL_CONTEXT PRIOR_TAG
+  export RATE_LAMBDA GRID_TASK_ID RANK USE_RESIDUAL USE_MORTON TRANSFORM TRANSFORM_HIDDEN
+  export SCORE_SLICE_CHANNELS SCORE_CONTEXT_HIDDEN LAMBDA_TAG
+}

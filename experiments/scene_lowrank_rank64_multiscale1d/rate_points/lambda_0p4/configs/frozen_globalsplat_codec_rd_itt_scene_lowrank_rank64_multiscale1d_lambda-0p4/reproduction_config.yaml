@@ -1,0 +1,327 @@
+schema: globalsplat_feature_codec.reproduction.v1
+method: frozen_globalsplat_codec_rd_itt
+working_directory: models/globalsplat_feature_codec
+environment: GSC_Seung
+initializer: checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt
+shared_basis: methods/observable_lowrank_1d/shared_basis/re10k_ctx12_s64_t512_rank64.pt
+retained_result: results/frozen_globalsplat_codec_rd_itt/CTC_REPORT_KO.md
+
+dataset:
+  train: RE10K train
+  evaluation: RE10K test Primary3
+  training_views:
+    context: 12
+    target: 8
+    context_target_disjoint: true
+  evaluation_views:
+    context: 8
+    target: 8
+    context_target_disjoint: true
+  image_shape: [256, 256]
+
+common_contract:
+  globalsplat_frozen: true
+  reference_rank: 64
+  ablation_ranks: [8, 16, 32, 48, 64, 128]
+  batch_size: 8
+  single_gpu_per_branch: true
+  objective: D + lambda * R
+  reference_lambdas: [0.0016, 0.4096]
+  promoted_scene_matched_lambdas: [0.0064, 0.0256]
+  total_steps: 50000
+  offline_lr: 0.0001
+  offline_lr_milestones: [35000, 45000]
+  offline_lr_gamma: 0.1
+  codec_weight_decay: 0.0
+  retained_stage_steps: [5000, 35000, 45000, 50000]
+
+shared_basis_candidate:
+  method_id: shared_lowrank_multiscale1d
+  implementation: methods/observable_lowrank_1d
+  runner: methods/observable_lowrank_1d/scripts/run_frozen_rd_final_branch.py
+  configs:
+    lambda_0p0016: methods/observable_lowrank_1d/configs/frozen_rd_final/rank64_lambda_0.0016.yaml
+    lambda_0p0256: methods/observable_lowrank_1d/configs/frozen_rd_final/rank64_lambda_0.0256.yaml
+    lambda_0p4096: methods/observable_lowrank_1d/configs/frozen_rd_final/rank64_lambda_0.4096.yaml
+  search_initializers:
+    lambda_0p0016: checkpoints/frozen_globalsplat_codec_rd_itt/shared_lowrank_multiscale1d/lambda_0p0016/step5000.ckpt
+    lambda_0p0256: checkpoints/frozen_globalsplat_codec_rd_itt/shared_lowrank_multiscale1d/lambda_0p0256/step5000.ckpt
+    lambda_0p4096: checkpoints/frozen_globalsplat_codec_rd_itt/shared_lowrank_multiscale1d/lambda_0p4096/step1000.ckpt
+  command_template: >-
+    CUDA_VISIBLE_DEVICES=<gpu> conda run -n GSC_Seung python
+    methods/observable_lowrank_1d/scripts/run_frozen_rd_final_branch.py
+    --config <config> --search-checkpoint <search-checkpoint>
+    --search-step <1000-or-5000> --method-id shared_lowrank_multiscale1d
+    --lambda-id <lambda-id> --physical-gpu <gpu>
+
+scene_basis_anchor:
+  method_id: scene_lowrank_rank64_multiscale1d
+  implementation: methods/multiscale1d
+  runner: methods/multiscale1d/scripts/run_frozen_rd_scene_lowrank_final_branch.py
+  cache: runs/frozen_globalsplat_codec_rd_itt/cache/scene_lowrank_rank64_re10k_ctx12_tgt8_s4096
+  reference_pair:
+    purpose: CTC-normalized structure comparison against the shared-basis model
+    lambdas: [0.0016, 0.4096]
+  promoted_matched_pair:
+    purpose: >-
+      Final scene-basis operating points after correcting the historical-to-current
+      rate normalization. The 5k target-blind lambda=0.0064 point already
+      Pareto-dominates the historical 260810 low-rate target-oracle point.
+    lambdas: [0.0064, 0.0256]
+    screening_steps: 5000
+    final_total_steps: 50000
+    final_lr_milestones: [35000, 45000]
+    final_lr_gamma: 0.1
+  command_template: >-
+    CUDA_VISIBLE_DEVICES=<gpu> conda run -n GSC_Seung python
+    methods/multiscale1d/scripts/run_frozen_rd_scene_lowrank_final_branch.py
+    --cache runs/frozen_globalsplat_codec_rd_itt/cache/scene_lowrank_rank64_re10k_ctx12_tgt8_s4096
+    --lambda-off <lambda> --lambda-id <lambda-id>
+    --physical-gpu <gpu> --batch-size 8 --lr 1e-4 --itt-lr 2e-3
+
+online_tuning:
+  target_blind: true
+  scene_basis_optimized_state: [lowrank_scores, lowrank_mean, residual_y, residual_z]
+  scene_basis_fixed_state: [scene_lowrank_basis, shared_codec_weights, globalsplat_weights]
+  scene_basis_rate_surrogate: fixed_q8_cdf_score_cost_plus_hyperprior_yz_and_fixed_payload
+  legacy_scene_yz_only_results_valid: false
+  shared_model_weights_frozen: true
+  target_rgb_in_backward: false
+  target_rgb_for_state_selection: false
+  common_report_step: 500
+  diagnostic_steps: [1000, 1500, 2000]
+  multipliers: [0.25, 0.5, 1.0, 2.0, 4.0]
+  actual_bitstream_required: true
+  fresh_receiver_required: true
+
+oracle_diagnostic_260810_matched:
+  purpose: >-
+    Isolate offline-checkpoint quality from the stricter deployable CTC by
+    replaying the historical 260810 scene adaptation action space and state
+    selection. These points are diagnostic/oracle only and must not be mixed
+    with target-blind CTC points.
+  checkpoints:
+    lambda_0p0016: checkpoints/frozen_globalsplat_codec_rd_itt/scene_lowrank_rank64_multiscale1d/lambda_0p0016/final_50k/step50000.ckpt
+    lambda_0p4096: checkpoints/frozen_globalsplat_codec_rd_itt/scene_lowrank_rank64_multiscale1d/lambda_0p4096/final_50k/step50000.ckpt
+  optimized_scene_state: [lowrank_scores, lowrank_mean, residual_y, residual_z]
+  scene_basis_frozen: true
+  online_steps: 500
+  learning_rate: 0.002
+  lr_decay: false
+  rate_weight: 0.0
+  state_selection: target_oracle_every_10
+  target_in_loss_or_backward: false
+  command_template: >-
+    CUDA_VISIBLE_DEVICES=<gpu> conda run -n GSC_Seung python
+    methods/multiscale1d/scripts/run_primary3_hyperprior.py
+    --checkpoint checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt
+    --codec-checkpoint <scene_50k_checkpoint> --output <diagnostic_output>
+    --steps 500 --lr 2e-3 --rate-weight 0 --rank 64
+    --state-selection target_oracle --oracle-every 10
+    --allow-target-oracle-diagnostic --tune-base
+    --receiver-subprocess
+
+scene_basis_lambda_normalization_calibration:
+  purpose: >-
+    Match the two historical rendering-aware operating regions after accounting
+    for the different rate normalization. The historical lambda_render 100 and
+    30 objectives correspond approximately to D+0.006413*R_BPGA and
+    D+0.021377*R_BPGA, so the nearest power-of-two-convention lambdas are
+    0.0064 and 0.0256.
+  derivation:
+    historical_rate_denominator: 3014656  # 4096 * 736 feature scalars
+    current_rate_denominator: 1933312     # 32768 * 59 Gaussian attributes
+    lambda_render_100_equivalent: 0.00641304
+    lambda_render_30_equivalent: 0.02137681
+  screening_lambdas: [0.0064, 0.0256]
+  screening_steps: 5000
+  offline_lr: 0.0001
+  offline_lr_decay: false
+  batch_size: 8
+  globalsplat_frozen: true
+  target_blind_itt:
+    steps: 500
+    learning_rate: 0.002
+    rate_multipliers: [0.5, 1.0, 2.0]
+    state_selection: fixed_final
+    optimized_scene_state: [lowrank_scores, lowrank_mean, residual_y, residual_z]
+    fixed_state: [scene_lowrank_basis, shared_codec_weights, globalsplat_weights]
+  promotion:
+    state: promoted_to_total_50000
+    lambdas: [0.0064, 0.0256]
+    evidence:
+      lambda_0p0064:
+        actual_mib_per_scene: 0.26282087961832684
+        psnr_db: 29.96467113494873
+        itt_rate_multiplier: 0.5
+      lambda_0p0256:
+        actual_mib_per_scene: 0.2361300786336263
+        psnr_db: 29.61437749862671
+        itt_rate_multiplier: 0.5
+  command_template: >-
+    CUDA_VISIBLE_DEVICES=<gpu> conda run --no-capture-output -n GSC_Seung
+    python methods/multiscale1d/scripts/run_frozen_rd_anchor_branch.py
+    --cache runs/frozen_globalsplat_codec_rd_itt/cache/scene_lowrank_rank64_re10k_ctx12_tgt8_s4096
+    --lambda-off <0.0064-or-0.0256> --lambda-id <lambda_id>
+    --physical-gpu <gpu> --batch-size 8 --lr 1e-4 --itt-lr 2e-3
+    --target-steps 5000
+
+corrected_scene_rank16_diagnostic:
+  purpose: >-
+    Re-evaluate the existing nonconventional-lambda rank-16 offline checkpoints
+    after invalidating their residual-y/z-only ITT. This isolates the transmitted
+    state action-space correction; it is not a final conventional-lambda model.
+  cache: runs/frozen_globalsplat_codec_rd_itt/cache/scene_lowrank_rank16_re10k_ctx12_tgt8_s4096
+  cache_state: deleted_after_diagnostic_reconstructable
+  cache_reconstruction: >-
+    CUDA_VISIBLE_DEVICES=<gpu> conda run --no-capture-output -n GSC_Seung python
+    methods/multiscale1d/scripts/extract_frozen_rd_anchor_cache.py
+    --checkpoint checkpoints/official_globalsplat/globalsplat-re10k-32k.ckpt
+    --dataset-root /data/data/re10k
+    --output runs/frozen_globalsplat_codec_rd_itt/cache/scene_lowrank_rank16_re10k_ctx12_tgt8_s4096
+    --scenes 4096 --rank 16 --factor-bits 8 --seed 111123 --device cuda
+  checkpoints:
+    lambda_0p004: checkpoints/frozen_globalsplat_codec_rd_itt/scene_lowrank_rank16_multiscale1d/lambda_0p004/step5000.ckpt
+    lambda_0p04: checkpoints/frozen_globalsplat_codec_rd_itt/scene_lowrank_rank16_multiscale1d/lambda_0p04/step5000.ckpt
+  offline_retraining: false
+  optimized_scene_state: [lowrank_scores, lowrank_mean, residual_y, residual_z]
+  fixed_state: [scene_lowrank_basis, shared_codec_weights, globalsplat_weights]
+  queue: methods/multiscale1d/scripts/queue_rank16_full_state_reevaluation_after_shared50k.sh
+
+shared_rank32_midpoint_ablation:
+  purpose: >-
+    Fill the missing one-factor midpoint between shared rank 16 and rank 64.
+    Score bytes dominate the current rank-64 stream, while rank 16 loses too much
+    quality; rank 32 changes only this allocation knob.
+  method_id: shared_lowrank_rank32_multiscale1d
+  initializer: methods/observable_lowrank_1d/shared_basis/re10k_ctx12_s64_t512_rank32.pt
+  lambdas: [0.0064, 0.1024]
+  total_steps_per_branch: 5000
+  learning_rate: 0.0001
+  learning_rate_decay: false
+  configs:
+    lambda_0p0064: methods/observable_lowrank_1d/configs/frozen_rd_search/rank32_lambda_0.0064.yaml
+    lambda_0p1024: methods/observable_lowrank_1d/configs/frozen_rd_search/rank32_lambda_0.1024.yaml
+  queue: methods/observable_lowrank_1d/scripts/queue_rank32_two_rate_5k_after_corrected_rank16.sh
+
+shared_rank32_final_and_rate_calibration:
+  purpose: >-
+    Preserve a lower-rate shared-basis candidate with two total-50k branches,
+    while separately calibrating stronger conventional lambdas if the two 5k
+    operating points do not span the preferred low-rate region.
+  method_id: shared_lowrank_rank32_multiscale1d
+  initializer: methods/observable_lowrank_1d/shared_basis/re10k_ctx12_s64_t512_rank32.pt
+  final_lambdas: [0.0256, 0.1024]
+  final_configs:
+    lambda_0p0256: methods/observable_lowrank_1d/configs/frozen_rd_final/rank32_lambda_0.0256.yaml
+    lambda_0p1024: methods/observable_lowrank_1d/configs/frozen_rd_final/rank32_lambda_0.1024.yaml
+  final_queues:
+    gpu4: methods/observable_lowrank_1d/scripts/queue_rank32_l0p0256_final_after_rank64.sh
+    gpu6: methods/observable_lowrank_1d/scripts/resume_rank48_then_rank32_final_gpu6.sh
+  calibration_lambdas: [0.4096, 1.6384]
+  calibration_configs:
+    lambda_0p4096: methods/observable_lowrank_1d/configs/frozen_rd_search/rank32_lambda_0.4096.yaml
+    lambda_1p6384: methods/observable_lowrank_1d/configs/frozen_rd_search/rank32_lambda_1.6384.yaml
+  calibration_queue: methods/observable_lowrank_1d/scripts/queue_rank32_rate_coverage_after_grouped.sh
+
+shared_rank48_capacity_midpoint_ablation:
+  purpose: >-
+    Test the exact capacity midpoint between rank32 and rank64. It removes 25%
+    of rank64 score symbols while retaining 98.165% of sampled train-token
+    variance; no other codec component changes.
+  method_id: shared_lowrank_rank48_multiscale1d
+  initializer: methods/observable_lowrank_1d/shared_basis/re10k_ctx12_s64_t512_rank48.pt
+  screening_lambdas: [0.0064, 0.0256, 0.1024]
+  screening_configs:
+    lambda_0p0064: methods/observable_lowrank_1d/configs/frozen_rd_search/rank48_lambda_0.0064.yaml
+    lambda_0p0256: methods/observable_lowrank_1d/configs/frozen_rd_search/rank48_lambda_0.0256.yaml
+    lambda_0p1024: methods/observable_lowrank_1d/configs/frozen_rd_search/rank48_lambda_0.1024.yaml
+  promoted_final_lambdas: [0.0064, 0.0256]
+  promoted_final_configs:
+    lambda_0p0064: methods/observable_lowrank_1d/configs/frozen_rd_final/rank48_lambda_0.0064.yaml
+    lambda_0p0256: methods/observable_lowrank_1d/configs/frozen_rd_final/rank48_lambda_0.0256.yaml
+  observed_calibration_outcome: >-
+    Lambda 0.0256 at 5k reaches 0.127761 MiB / 29.3043 dB under common
+    fixed-500 target-blind ITT, +0.356 dB above the completed rank64 50k
+    log-rate interpolation, so it is promoted. Lambda 0.1024 is strictly
+    dominated after ITT and is not promoted.
+  queue: methods/observable_lowrank_1d/scripts/queue_rank48_calibration_after_rank128.sh
+
+shared_rank_local_refinement:
+  purpose: >-
+    Rank48 gives a positive capacity sweet-spot clue, so test only its immediate
+    lower/higher neighbors rank40 and rank56. This is a scalar rank
+    hyperparameter refinement, not a new codec topology.
+  ranks: [56, 40]
+  lambda: 0.0256
+  configs:
+    rank56: methods/observable_lowrank_1d/configs/frozen_rd_search/rank56_lambda_0.0256.yaml
+    rank40: methods/observable_lowrank_1d/configs/frozen_rd_search/rank40_lambda_0.0256.yaml
+  source_initializer: methods/observable_lowrank_1d/shared_basis/re10k_ctx12_s64_t512_rank64.pt
+  derived_initializers:
+    rank56: methods/observable_lowrank_1d/shared_basis/re10k_ctx12_s64_t512_rank56.pt
+    rank40: methods/observable_lowrank_1d/shared_basis/re10k_ctx12_s64_t512_rank40.pt
+  queue: methods/observable_lowrank_1d/scripts/queue_rank56_rank40_local_refinement_after_rank32_final.sh
+  queue_gpu: 6
+  prerequisite: >-
+    Wait for the complete rank32 lambda=0.1024 total50k ITT/fresh-receiver
+    status; poll no more frequently than once every 600 seconds.
+  promotion_rule: >-
+    At the same lambda and 5k, require at least +0.10 dB over log-rate
+    interpolation of the adjacent completed ranks, or Pareto dominance of an
+    adjacent endpoint. A smaller gain keeps rank48 and does not justify another
+    final50k branch.
+
+shared_rank128_capacity_upper_bound:
+  purpose: >-
+    Test whether the high-quality gap is caused by an insufficient shared-basis
+    rank. Only rank changes relative to factorized shared rank64; batch8 is the
+    maximum feasible power-of-two batch under the matched GPU evidence.
+  method_id: shared_lowrank_rank128_multiscale1d
+  initializer: methods/observable_lowrank_1d/shared_basis/re10k_ctx12_s64_t512_rank128.pt
+  batch_size: 8
+  screening_lambdas: [0.4096, 0.0016]
+  screening_configs:
+    lambda_0p4096: methods/observable_lowrank_1d/configs/frozen_rd_search/rank128_lambda_0.4096.yaml
+    lambda_0p0016: methods/observable_lowrank_1d/configs/frozen_rd_search/rank128_lambda_0.0016.yaml
+  requested_total_steps_per_branch: 5000
+  exact_resume_from_step: 1000
+  queue: methods/observable_lowrank_1d/scripts/queue_rank128_two_rate_5k_after_scene_calibration.sh
+
+grouped_position_factorized_ablation:
+  purpose: >-
+    Test the measured score-stream non-stationarity with fixed Morton-position
+    groups. This changes only score marginals, uses one parallel entropy pass,
+    and transmits no per-scene grouping metadata.
+  base_method_id: shared_lowrank_multiscale1d
+  lambda: 0.0016
+  group16_config: methods/observable_lowrank_1d/configs/frozen_rd_search/rank64_grouped16_lambda_0.0016.yaml
+  group16_queue: methods/observable_lowrank_1d/scripts/queue_grouped16_rank64_after_scene50k.sh
+  group32_config: methods/observable_lowrank_1d/configs/frozen_rd_search/rank64_grouped32_lambda_0.0016.yaml
+  group32_conditional_queue: methods/observable_lowrank_1d/scripts/queue_grouped32_after_grouped16.sh
+  group32_conditional_queue_sha256: 6d3f96cca5f927a31ac6485651359475f151c3840ab63017b91514cb976627f0
+  observed_outcome: >-
+    Group16 is strictly dominated by matched factorized rank64 at 5k and fixed-500
+    ITT, so group32 is skipped by the result-driven dominance gate.
+  combination_policy: >-
+    Combine grouped entropy with rank48 only after grouped entropy first gives
+    positive isolated actual-bitstream evidence on rank64.
+
+score_stream_diagnostic:
+  purpose: >-
+    Test whether the dominant scene score stream alone justifies a simple
+    per-channel marginal CDF or block-delta ablation before adding a learned model.
+  script: scripts/analyze_scene_score_stream.py
+  source_bitstreams: results/frozen_globalsplat_codec_rd_itt/search_5k/scene_lowrank_rank64_multiscale1d/lambda_0p0064_matched/zero_update/bitstreams
+  output: results/frozen_globalsplat_codec_rd_itt/diagnostics/scene_score_stream_primary3.json
+  role: symbol-level Primary3 diagnostic, not an R-D result
+
+outputs:
+  manifest: results/frozen_globalsplat_codec_rd_itt/experiment_manifest.json
+  final_results: results/frozen_globalsplat_codec_rd_itt/final_50k
+  checkpoints: checkpoints/frozen_globalsplat_codec_rd_itt
+  figure_finalizer: scripts/finalize_final50k_deadline_figure.py
+  figure_selection: results/frozen_globalsplat_codec_rd_itt/final_50k/figure_selection.json
+  figure_selection_example: results/frozen_globalsplat_codec_rd_itt/final_50k/figure_selection.example.json
+  figure_finalizer_poll_seconds: 600
+  report: ../../docs/reports/chapter_2_globalsplat_feature_codec_design/chapter_2_globalsplat_feature_codec_design.md

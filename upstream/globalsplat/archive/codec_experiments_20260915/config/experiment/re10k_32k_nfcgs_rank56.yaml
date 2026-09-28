@@ -1,0 +1,46 @@
+# @package _global_
+# Archived rank-56 codec training recipe: frozen GlobalSplat-32K on RE10K.
+defaults:
+  - override /model: globalsplat_nfcgs_rank56
+  - override /dataset: re10k_nfcgs_train
+  - override /loss: nfcgs_codec_rd
+
+experiment_name: nfcgs_rank56_lambda0p0256
+seed: 111123
+
+model:
+  latent_rep_token_amount: 4096
+  freeze_globalsplat: true
+
+# The released GlobalSplat checkpoint is already trained at full capacity.
+# Codec-only training always decodes 4096 x 8 = 32,768 Gaussians.
+curriculum:
+  boundaries: [0, 0, 0]
+  ramp_iters: 0
+  final_stage: 3
+
+optimizer:
+  name: adam
+  lr: 1.0e-4
+  weight_decay: 0.0
+  batch_size: 8
+  num_workers: 8
+  prefetch_factor: 2
+  lr_milestones: [35000, 45000]
+  lr_gamma: 0.1
+  quantile_training: deterministic
+
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  strategy: auto
+  max_steps: 50000
+  log_every_n_steps: 20
+  accumulate_grad_batches: 1
+  gradient_clip_val: 0.5
+  precision: bf16-mixed
+
+checkpointing:
+  every_n_train_steps: 5000
+  save_top_k: -1

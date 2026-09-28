@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Fair low-LR continuations from the same original Full checkpoint.
+# P0 and P2 differ only by the zero-initialized residual spatial predictor.
+select_full_cooldown_condition() {
+  local task="$1"
+  case "${task}" in
+    0|2) SCORE_SPATIAL_PREDICTOR=linear;    ARM_TAG=p0_linear ;;
+    1|3) SCORE_SPATIAL_PREDICTOR=residual7; ARM_TAG=p2_residual7 ;;
+    *) echo "ERROR: Full cooldown grid expects task id 0 through 3" >&2; return 1 ;;
+  esac
+
+  RATE_LAMBDA=0.0064
+  GRID_TASK_ID=0
+  PARENT_TASK_ID=8
+  if (( task >= 2 )); then
+    RATE_LAMBDA=0.0256
+    GRID_TASK_ID=2
+    PARENT_TASK_ID=9
+  fi
+
+  RANK=56
+  USE_RESIDUAL=true
+  USE_MORTON=true
+  TRANSFORM=nonlinear
+  TRANSFORM_HIDDEN=32
+  SCORE_MEAN_CONDITION=true
+  SCORE_CHANNEL_CONTEXT=true
+  SCORE_SPATIAL_CONTEXT=true
+  SCORE_SPATIAL_ENTROPY=shared
+  SCORE_SPATIAL_HIDDEN="${FULL_COOLDOWN_SPATIAL_HIDDEN:-32}"
+  SCORE_SLICE_CHANNELS="${FULL_COOLDOWN_SLICE_CHANNELS:-16}"
+  SCORE_CONTEXT_HIDDEN="${FULL_COOLDOWN_CONTEXT_HIDDEN:-64}"
+  PARENT_PRIOR_TAG=m1c1s1
+  LAMBDA_TAG="${RATE_LAMBDA/./p}"
+
+  export RATE_LAMBDA GRID_TASK_ID RANK USE_RESIDUAL USE_MORTON
+  export TRANSFORM TRANSFORM_HIDDEN LAMBDA_TAG ARM_TAG
+  export PARENT_PRIOR_TAG PARENT_TASK_ID
+  export SCORE_MEAN_CONDITION SCORE_CHANNEL_CONTEXT SCORE_SPATIAL_CONTEXT
+  export SCORE_SPATIAL_PREDICTOR SCORE_SPATIAL_ENTROPY SCORE_SPATIAL_HIDDEN
+  export SCORE_SLICE_CHANNELS SCORE_CONTEXT_HIDDEN
+}
