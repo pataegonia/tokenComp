@@ -152,7 +152,7 @@ class GlobalSplat(nn.Module):
         )
         self.freeze_globalsplat = bool(freeze_globalsplat)
         self.feature_codec_train_scope = str(feature_codec_train_scope)
-        if self.feature_codec is not None:
+        if self.feature_codec is not None and self.feature_codec.score_context is not None:
             self.feature_codec.score_context.mean_offset_enabled = bool(
                 score_mean_offset_enabled
             )
