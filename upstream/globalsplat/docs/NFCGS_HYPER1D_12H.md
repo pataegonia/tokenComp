@@ -232,7 +232,7 @@ optimizer/scheduler/global step을 복원하고 job마다 새 11시간 예산을
 
 ## 별도 test 장면 샘플 평가
 
-`eval_hyper1d.slurm`은 **RE10K test/index.json의 장면 전체에서 최대 32개를 랜덤 선택**한다.
+`eval_hyper1d.slurm`은 **RE10K test/index.json의 장면 전체에서 최대 100개를 랜덤 선택**한다.
 seed는 111123이며 해당 run의 validation 장면을 제외한다. 첫 128개 장면을 다시 평가하는
 방식이 아니다. validation도 test split 일부를 사용하므로 장면 단위로 제외한다.
 입력 12프레임·target 8프레임은 deterministic-all sampler로 선택하며 서로 겹치지 않는다.
@@ -256,7 +256,8 @@ CKPT="$RUN/checkpoints/hyper1d_12h/version_0/step000016000.ckpt"
 mkdir -p logs/slurm
 sbatch scripts/slurm/eval_hyper1d.slurm "$CKPT" \
   --exclude-validation "$RUN/validation/manifest.json" \
-  --output "$RUN/eval_test32_step16000" --save-images
+  --max-scenes 100 \
+  --output "$RUN/eval_test100_step16000" --save-images
 ```
 
 `--max-scenes 16`으로 개수를 줄이거나 `--sample-seed`로 다른 샘플을 선택할 수 있다.
@@ -267,8 +268,8 @@ manifest를 찾지 못하면 명시적인 경로를 요구하며 validation 제�
 처리 불가능한 장면은 기존 loader가 건너뛰며 실제 평가 개수는 최종 JSON의 `scene_count`다.
 선택된 장면을 포함하는 chunk만 읽고, 같은 chunk의 다른 장면은 image decoding 전에 제외한다.
 
-평가 GPU는 v9의 1개, SLURM 제한은 2시간이다. 결과 디렉터리는
-`$RUN/eval_test32_step16000/evaluation/hyper1d_12h/`이다:
+평가 GPU는 v11의 1개, SLURM 제한은 2시간이다. 결과 디렉터리는
+`$RUN/eval_test100_step16000/evaluation/hyper1d_12h/`이다:
 
 - `scores_all_avg.json`: PSNR·SSIM·LPIPS, bytes/bpga, y/z/container bytes, 실제 scene count.
 - `actual_rate_per_scene.json`: 장면별 지표와 context/target frame IDs.

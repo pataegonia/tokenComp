@@ -18,7 +18,7 @@ if [[ $# -eq 0 ]]; then
 fi
 if [[ "$1" == --help || "$1" == -h ]]; then
   echo "Usage: sbatch scripts/slurm/eval_hyper1d.slurm CHECKPOINT [run_hyper1d eval options]"
-  echo "Defaults: sample 32 test scenes, seed 111123, excluding the run's validation scenes."
+  echo "Defaults: sample 100 test scenes, seed 111123, excluding the run's validation scenes."
   echo "Use --max-scenes, --sample-seed, --output or --save-images to customize evaluation."
   exit 0
 fi
@@ -46,5 +46,5 @@ export PYTHONPATH="${REPO_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONUNBUFFERED=1 HYDRA_FULL_ERROR=1 WANDB_MODE=disabled
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 exec srun --ntasks=1 python scripts/run_hyper1d.py eval \
-  --checkpoint "${checkpoint}" --sample-test --max-scenes 32 \
+  --checkpoint "${checkpoint}" --sample-test --max-scenes 100 \
   --sample-seed 111123 --workers 0 "$@"
