@@ -166,6 +166,70 @@ class ResidualBitstream:
 
 
 @dataclass(frozen=True, slots=True)
+class Hyper1DSceneBitstream:
+    """One-scene E2EH0401 container; only the Morton flag is supported."""
+
+    points: int
+    channels: int
+    payload: bytes
+    flags: int = 0
+    version: int = 1
+
+    MAGIC: ClassVar[bytes] = b"E2EH0401"
+    HEADER: ClassVar[struct.Struct] = struct.Struct(">8sHHIIQ32s")
+
+    def _validate(self) -> None:
+        if self.version != 1 or self.flags & ~1:
+            raise ValueError("unsupported Hyper1D version or flags")
+        if self.points <= 0 or self.channels <= 0:
+            raise ValueError("Hyper1D points/channels must be positive")
+        packed = ResidualBitstream.unpack(self.payload)
+        if len(packed.z_strings) != 1 or len(packed.y_strings) != 1:
+            raise ValueError("Hyper1D container requires one scene (one z/y string)")
+        if packed.y_shape[0] != 1 or packed.z_shape[0] != 1 or min(
+            packed.y_shape[1], packed.z_shape[1]
+        ) <= 0:
+            raise ValueError("invalid Hyper1D latent shapes")
+
+    def pack(self) -> bytes:
+        self._validate()
+        header = self.HEADER.pack(self.MAGIC, self.version, self.flags, self.points,
+                                  self.channels, len(self.payload), bytes(32))
+        digest = hashlib.sha256(header + self.payload).digest()
+        return header[:-32] + digest + self.payload
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "Hyper1DSceneBitstream":
+        if len(data) < cls.HEADER.size:
+            raise ValueError("truncated Hyper1D header")
+        magic, version, flags, points, channels, length, digest = cls.HEADER.unpack_from(data)
+        if magic != cls.MAGIC:
+            raise ValueError(f"invalid Hyper1D magic {magic!r}")
+        if len(data) != cls.HEADER.size + length:
+            raise ValueError("Hyper1D payload length mismatch")
+        zeroed = data[:cls.HEADER.size - 32] + bytes(32) + data[cls.HEADER.size:]
+        if hashlib.sha256(zeroed).digest() != digest:
+            raise ValueError("Hyper1D SHA-256 authentication failed")
+        result = cls(points, channels, data[cls.HEADER.size:], flags, version)
+        result._validate()
+        return result
+
+    @property
+    def bytes_by_stream(self) -> dict[str, int]:
+        packed = ResidualBitstream.unpack(self.payload)
+        y, z = sum(map(len, packed.y_strings)), sum(map(len, packed.z_strings))
+        return {"y": y, "z": z, "container": self.HEADER.size + len(self.payload) - y - z}
+
+
+def scene_bytes_by_stream(data: bytes) -> dict[str, int]:
+    if data.startswith(Hyper1DSceneBitstream.MAGIC):
+        return Hyper1DSceneBitstream.unpack(data).bytes_by_stream
+    if data.startswith(SceneBitstream.MAGIC):
+        return SceneBitstream.unpack(data).bytes_by_stream
+    raise ValueError("unsupported scene bitstream magic")
+
+
+@dataclass(frozen=True, slots=True)
 class ScoreContextBitstream:
     """Container for decoder-causal score-prior entropy strings."""
 

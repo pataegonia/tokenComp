@@ -123,17 +123,17 @@ class GlobalSplat(nn.Module):
         self.feature_codec = None
         geometry_decoder_dim = self.dim_latents
         if feature_codec is not None:
-            from ..compression import CodecConfig, ObservableLowRank1DCodec
+            from ..compression import codec_config_from_mapping, build_feature_codec
 
             codec_values = dict(feature_codec)
             codec_values.setdefault("texture_channels", self.dim_latents)
             codec_values.setdefault("geometry_channels", self.dim_latents)
-            codec_config = CodecConfig.from_mapping(codec_values)
+            codec_config = codec_config_from_mapping(codec_values)
             if codec_config.texture_channels != self.dim_latents:
                 raise ValueError("feature_codec.texture_channels must match dim_latents")
             if codec_config.geometry_channels != self.dim_latents:
                 raise ValueError("feature_codec.geometry_channels must match dim_latents")
-            self.feature_codec = ObservableLowRank1DCodec(codec_config)
+            self.feature_codec = build_feature_codec(codec_config)
             geometry_decoder_dim = codec_config.geometry_observable_channels
 
         # Set after each codec-enabled forward so training/evaluation code can
@@ -152,7 +152,7 @@ class GlobalSplat(nn.Module):
         )
         self.freeze_globalsplat = bool(freeze_globalsplat)
         self.feature_codec_train_scope = str(feature_codec_train_scope)
-        if self.feature_codec is not None:
+        if self.feature_codec is not None and hasattr(self.feature_codec, "score_context"):
             self.feature_codec.score_context.mean_offset_enabled = bool(
                 score_mean_offset_enabled
             )
@@ -235,9 +235,14 @@ class GlobalSplat(nn.Module):
                 "compress_scene_tokens requires a feature_codec configuration"
             )
         appearance, geometry = encoded_patch
-        geometry_observable = self.feature_codec.project_geometry(geometry)
-        token_centers = self.gaussian_decoder.decoded_token_centers(geometry_observable)
+        token_centers = self._codec_positions(geometry)
         return self.feature_codec.compress(appearance, geometry, token_centers)
+
+    def _codec_positions(self, geometry):
+        if not self.feature_codec.config.use_morton:
+            return None
+        observable = self.feature_codec.project_geometry(geometry)
+        return self.gaussian_decoder.decoded_token_centers(observable)
 
     @torch.no_grad()
     def decompress_scene_tokens(self, data: bytes):
@@ -280,8 +285,7 @@ class GlobalSplat(nn.Module):
         self.last_codec_output = None
         if self.feature_codec is not None:
             appearance, geometry = encoded_patch
-            geometry_observable = self.feature_codec.project_geometry(geometry)
-            token_centers = self.gaussian_decoder.decoded_token_centers(geometry_observable)
+            token_centers = self._codec_positions(geometry)
             self.last_codec_output = self.feature_codec(
                 appearance,
                 geometry,

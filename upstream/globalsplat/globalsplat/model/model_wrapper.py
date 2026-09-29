@@ -212,6 +212,7 @@ class GlobalSplatModule(pl.LightningModule):
         lr_milestones: Tuple[int, ...] = (),
         lr_gamma: float = 0.1,
         quantile_training: str = "deterministic",
+        validation_cfg: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
         self.model = model
@@ -244,6 +245,17 @@ class GlobalSplatModule(pl.LightningModule):
 
         # Evaluation (mode=test) configuration, mirroring the upstream TestCfg.
         self.test_cfg = dict(test_cfg or {})
+        self.validation_cfg = dict(validation_cfg or {})
+        self._validation_manifest = None
+        if self.validation_cfg.get("actual_bitstream", False):
+            import json
+            from pathlib import Path
+            manifest_path = Path(self.validation_cfg.get("output_path", "outputs/hyper1d_validation")) / "manifest.json"
+            if manifest_path.is_file():
+                self._validation_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        codec = getattr(self.model, "feature_codec", None)
+        if codec is not None and hasattr(codec, "capture_diagnostics"):
+            codec.capture_diagnostics = bool(self.validation_cfg.get("diagnostics", False))
         self.upstream_repo_root = upstream_repo_root
         self.experiment_name = str(experiment_name)
 
@@ -299,9 +311,10 @@ class GlobalSplatModule(pl.LightningModule):
         codec = getattr(self.model, "feature_codec", None)
         if codec is not None:
             checkpoint["feature_codec_config"] = codec.config.to_dict()
-            checkpoint["score_mean_offset_enabled"] = (
-                codec.score_context.mean_offset_enabled
-            )
+            if hasattr(codec, "score_context"):
+                checkpoint["score_mean_offset_enabled"] = codec.score_context.mean_offset_enabled
+            elif getattr(codec.config, "codec_type", None) == "hyper1d":
+                checkpoint["hyper1d_provenance"] = getattr(self, "hyper1d_provenance", {})
         # Save only the model's own weights. The perceptual-loss VGG and the
         # (optional) LPIPS network under ``render_criterion.*`` are frozen,
         # pretrained feature extractors re-created identically on load, so they
@@ -314,6 +327,7 @@ class GlobalSplatModule(pl.LightningModule):
             del sd[key]
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        self.hyper1d_provenance = checkpoint.get("hyper1d_provenance", {})
         # Re-inject the (identical) perceptual-loss weights that on_save dropped
         # so a strict load during training/resume still succeeds. At eval the
         # module isn't built and strict_loading=False, so any such keys are
@@ -378,6 +392,8 @@ class GlobalSplatModule(pl.LightningModule):
         for stream, stream_bits in output.estimated_bits_by_stream.items():
             terms[f"codec_{stream}_bits"] = stream_bits.detach()
             terms[f"codec_{stream}_bpga"] = (stream_bits / float(denominator)).detach()
+        for name, value in getattr(codec, "last_diagnostics", {}).items():
+            terms[f"codec_{name}"] = value.detach()
         if self.quantile_training == "aux":
             terms["codec_aux_loss"] = codec.aux_loss() * self.codec_aux_loss_weight
         return terms
@@ -591,6 +607,12 @@ class GlobalSplatModule(pl.LightningModule):
     def on_validation_start(self):
         stage, mix = self._stage_schedule(int(self.global_step))
         self.model.set_stage(stage, mix=mix)
+        if self.validation_cfg.get("actual_bitstream", False):
+            if self.model.feature_codec is None:
+                raise ValueError("actual-bitstream validation requires feature_codec")
+            self.model.feature_codec.update(force=True)
+            self._val_records = []
+            self._val_psnr, _, self._val_lpips, *_ = self._load_eval_utils()
         if self.trainer.is_global_zero:
             print(f"[val] global_step={int(self.global_step)} stage={stage} mix={mix:.4f}")
 
@@ -840,7 +862,71 @@ class GlobalSplatModule(pl.LightningModule):
         return psnr
 
     def validation_step(self, batch, batch_idx):
+        if self.validation_cfg.get("actual_bitstream", False):
+            return self._validate_bitstream(batch, batch_idx)
         return self.eval_psnr(batch, log_video_n=(batch_idx < 6), tag="val")
+
+    @torch.no_grad()
+    def _validate_bitstream(self, batch, batch_idx):
+        from ..compression.bitstream import scene_bytes_by_stream
+
+        inputs, targets = batch["inputs"], batch["targets"]
+        if inputs["images"].shape[0] != 1:
+            raise ValueError("actual-bitstream validation requires one scene per batch")
+        texture, geometry = self.model.encode_scene_tokens(inputs)
+        with torch.autocast(device_type=texture.device.type, enabled=False):
+            positions = self.model._codec_positions(geometry.float())
+            estimated = self.model.feature_codec(texture.float(), geometry.float(), positions,
+                                                  training=False, restore_original_order=False)
+            compressed = self.model.compress_scene_tokens((texture.float(), geometry.float()))
+            decoded = self.model.decompress_scene_tokens(compressed.data)
+        preds = self.model.decode_scene_tokens(decoded)
+        b, t, _, h, w = targets["images"].shape
+        image = render_static_batched(preds, targets, render_depth=False)["img"].view(b, t, 3, h, w)[0].clamp(0, 1)
+        gt = targets["images"][0].float().clamp(0, 1)
+        sizes = scene_bytes_by_stream(compressed.data)
+        actual = len(compressed.data)
+        estimated_bits = float(estimated.estimated_bits)
+        metrics = {
+            "psnr": float(self._val_psnr(gt, image).mean()),
+            "lpips": float(self._val_lpips(gt, image).mean()),
+            "actual_bytes": actual,
+            "actual_bpga": 8 * actual / (preds.num_gaussians * self.gaussian_attributes),
+            "estimated_bits": estimated_bits,
+            "entropy_bit_gap": 8 * (actual - sizes["container"]) - estimated_bits,
+            **{f"actual_{name}_bytes": value for name, value in sizes.items()},
+        }
+        for name, value in metrics.items():
+            self.log(f"val_{name}", value, on_step=False, on_epoch=True, batch_size=1,
+                     prog_bar=name in ("psnr", "actual_bpga"))
+        info = batch.get("scene_info", {}) or {}
+        scene = info.get("scene", [f"scene_{batch_idx:06d}"])
+        scene = scene[0] if isinstance(scene, (list, tuple)) else scene
+        self._val_records.append({"scene": str(scene),
+            "context_frame_ids": inputs["frame_ids"].detach().cpu().reshape(-1).tolist(),
+            "target_frame_ids": targets["frame_ids"].detach().cpu().reshape(-1).tolist(), **metrics})
+        return metrics["psnr"]
+
+    def on_validation_epoch_end(self):
+        if not self.validation_cfg.get("actual_bitstream", False) or not self._val_records:
+            return
+        import json
+        from pathlib import Path
+
+        manifest = [{k: row[k] for k in ("scene", "context_frame_ids", "target_frame_ids")}
+                    for row in self._val_records]
+        if len({row["scene"] for row in manifest}) != len(manifest):
+            raise RuntimeError("fixed validation repeated a scene")
+        if self._validation_manifest is not None and manifest != self._validation_manifest:
+            raise RuntimeError("fixed validation scenes or frames changed between evaluations")
+        self._validation_manifest = manifest
+        self._last_actual_validation_step = int(self.global_step)
+        if self.trainer.is_global_zero:
+            directory = Path(self.validation_cfg.get("output_path", "outputs/hyper1d_validation"))
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            (directory / f"step{int(self.global_step):09d}.json").write_text(
+                json.dumps(self._val_records, indent=2), encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Evaluation (mode=test): same metrics/benchmark/output contract as the
@@ -886,7 +972,10 @@ class GlobalSplatModule(pl.LightningModule):
         if self.actual_bitstream:
             if codec is None:
                 raise ValueError("test.actual_bitstream=true requires model.feature_codec")
-            codec.score_context.capture_diagnostics = self.score_context_diagnostics
+            if self.score_context_diagnostics and not hasattr(codec, "score_context"):
+                raise ValueError("score_context_diagnostics requires a score-context codec")
+            if hasattr(codec, "score_context"):
+                codec.score_context.capture_diagnostics = self.score_context_diagnostics
             # Lightning's checkpoint callback runs before our batch-end CDF
             # refresh, so populated tables may lag the saved entropy weights.
             # Rebuild tables from those weights while preserving the saved
@@ -950,10 +1039,10 @@ class GlobalSplatModule(pl.LightningModule):
         out_path = self._test_out_dir()
 
         if compressed is not None:
-            from ..compression.bitstream import SceneBitstream
+            from ..compression.bitstream import scene_bytes_by_stream
 
             actual_bytes = len(compressed.data)
-            stream_bytes = SceneBitstream.unpack(compressed.data).bytes_by_stream
+            stream_bytes = scene_bytes_by_stream(compressed.data)
             if sum(stream_bytes.values()) != actual_bytes:
                 raise RuntimeError("actual stream byte accounting does not match bitstream length")
             bits_per_gaussian = (8.0 * actual_bytes) / preds.num_gaussians
@@ -1037,8 +1126,8 @@ class GlobalSplatModule(pl.LightningModule):
                 json.dump(self.test_rate_records, f)
             rate_fields = ["actual_bytes", "actual_bits_per_gaussian", "actual_bpga"]
             rate_fields.extend(
-                f"actual_{name}_bytes"
-                for name in ("score", "residual_y", "residual_z", "mean", "container")
+                key for key in self.test_rate_records[0]
+                if key.startswith("actual_") and key.endswith("_bytes") and key != "actual_bytes"
             )
             for field in rate_fields:
                 values = [float(record[field]) for record in self.test_rate_records]

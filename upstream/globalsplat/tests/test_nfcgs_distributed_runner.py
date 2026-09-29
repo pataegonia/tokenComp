@@ -75,5 +75,6 @@ class DistributedRunnerTests(unittest.TestCase):
 
     def test_v12_allocation_matches_runner(self):
         script = (ROOT / "scripts/slurm/train_nfcgs_joint_v12.slurm").read_text()
-        for setting in ("--nodelist=ariel-v12", "--gres=gpu:8", "--ntasks-per-node=8", "--devices 8", "--launcher srun", "--accumulate 1"):
+        self.assertRegex(script, r"(?m)^#SBATCH --gres=gpu:(?:normal:)?8$")
+        for setting in ("--nodelist=ariel-v12", "--ntasks-per-node=8", "--devices 8", "--launcher srun", "--accumulate 1"):
             self.assertIn(setting, script)

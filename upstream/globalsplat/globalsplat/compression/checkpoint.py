@@ -11,6 +11,8 @@ from torch import Tensor, nn
 
 from .codec import ObservableLowRank1DCodec
 from .config import CodecConfig
+from .hyper1d_config import Hyper1DConfig
+from .factory import build_feature_codec
 
 
 FEATURE_PREFIXES = ("model.feature_codec.", "feature_codec.")
@@ -18,8 +20,8 @@ FEATURE_PREFIXES = ("model.feature_codec.", "feature_codec.")
 
 @dataclass(slots=True)
 class LoadedCodec:
-    codec: ObservableLowRank1DCodec
-    config: CodecConfig
+    codec: nn.Module
+    config: CodecConfig | Hyper1DConfig
     checkpoint_metadata: dict[str, Any]
     source_prefix: str
 
@@ -35,7 +37,7 @@ def _feature_state_dict(
         }
         if selected:
             return selected, prefix
-    if "shared_basis" in state_dict:
+    if "shared_basis" in state_dict or "f_mean" in state_dict:
         return dict(state_dict), ""
     raise ValueError("checkpoint has no model.feature_codec state")
 
@@ -184,13 +186,49 @@ def _validate_spatial_predictor_state(
 
 
 def validate_feature_codec_checkpoint(
-    checkpoint: Mapping[str, Any], config: CodecConfig
+    checkpoint: Mapping[str, Any], config: CodecConfig | Hyper1DConfig
 ) -> None:
     """Require the main codec architecture and matching saved metadata."""
     state, _ = _feature_state_dict(checkpoint.get("state_dict", checkpoint))
     metadata = checkpoint.get("feature_codec_config")
-    actual = infer_config(state, metadata)
+    actual = infer_feature_codec_config(state, metadata)
+    if type(actual) is not type(config):
+        raise ValueError("checkpoint codec type does not match requested codec")
     _validate_config(actual, config, include_flags=metadata is not None)
+
+
+def infer_feature_codec_config(state, metadata=None):
+    """Require explicit Hyper1D metadata: stride/norm cannot be inferred from weights."""
+    kind = metadata.get("codec_type") if metadata is not None else None
+    if kind is None:
+        if "f_mean" in state or "g_a.0.weight" in state:
+            raise ValueError("Hyper1D checkpoints require feature_codec_config.codec_type")
+        return infer_config(state, metadata)
+    if kind != "hyper1d":
+        raise ValueError(f"unsupported checkpoint codec_type {kind!r}")
+    missing_metadata = set(Hyper1DConfig.__dataclass_fields__) - set(metadata)
+    if missing_metadata:
+        raise ValueError(f"incomplete Hyper1D checkpoint metadata: {sorted(missing_metadata)}")
+    config = Hyper1DConfig.from_mapping(metadata)
+    with torch.random.fork_rng(devices=[]):
+        prototype = build_feature_codec(config)
+    expected = prototype.state_dict()
+    missing, unexpected = sorted(set(expected) - set(state)), sorted(set(state) - set(expected))
+    # Coder tables have dynamic sizes. All parameters and normalization buffers are fixed.
+    dynamic = {key for key in expected if key.rsplit(".", 1)[-1] in
+               {"_quantized_cdf", "_offset", "_cdf_length", "scale_table"}}
+    wrong = {key: (tuple(state[key].shape), tuple(value.shape)) for key, value in expected.items()
+             if key in state and key not in dynamic and state[key].shape != value.shape}
+    if missing or unexpected or wrong:
+        raise ValueError(f"Hyper1D checkpoint state mismatch: missing={missing}, unexpected={unexpected}, shapes={wrong}")
+    for name in ("f_mean", "f_std"):
+        if not torch.isfinite(state[name]).all():
+            raise ValueError("invalid Hyper1D normalization buffers")
+    if (state["f_std"] <= 0).any():
+        raise ValueError("invalid Hyper1D f_std")
+    if config.input_norm == "none" and (torch.count_nonzero(state["f_mean"]) or not torch.equal(state["f_std"], torch.ones_like(state["f_std"]))):
+        raise ValueError("input_norm=none requires identity normalization buffers")
+    return config
 
 
 def validate_score_mean_offset_mode(
@@ -202,6 +240,10 @@ def validate_score_mean_offset_mode(
     """Keep the ablation mode with its checkpoint, except for an explicit warm start."""
 
     saved = checkpoint.get("score_mean_offset_enabled", True)
+    if isinstance(codec.config, Hyper1DConfig):
+        if "score_mean_offset_enabled" in checkpoint:
+            raise ValueError("Hyper1D checkpoint contains score-only metadata")
+        return
     requested = codec.score_context.mean_offset_enabled
     if type(saved) is not bool:
         raise ValueError("invalid score_mean_offset_enabled checkpoint metadata")
@@ -248,11 +290,10 @@ def load_feature_codec_checkpoint(
     checkpoint = torch.load(Path(path), map_location=map_location, weights_only=False)
     raw_state = checkpoint.get("state_dict", checkpoint)
     feature_state, prefix = _feature_state_dict(raw_state)
-    config = infer_config(feature_state, checkpoint.get("feature_codec_config"))
-    codec = ObservableLowRank1DCodec(config)
-    codec.score_context.mean_offset_enabled = checkpoint.get(
-        "score_mean_offset_enabled", True
-    )
+    config = infer_feature_codec_config(feature_state, checkpoint.get("feature_codec_config"))
+    codec = build_feature_codec(config)
+    if isinstance(config, CodecConfig):
+        codec.score_context.mean_offset_enabled = checkpoint.get("score_mean_offset_enabled", True)
     validate_score_mean_offset_mode(checkpoint, codec)
     resize_registered_buffers(codec, feature_state)
     incompatible = codec.load_state_dict(feature_state, strict=True)

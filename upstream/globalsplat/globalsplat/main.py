@@ -227,6 +227,9 @@ def build_datamodule(cfg: DictConfig):
             augment=ds.augment,
             **common,
         )
+        if cfg.get("validation", {}).get("fixed_scenes", False):
+            from globalsplat.pilot import configure_fixed_validation
+            configure_fixed_validation(dm, cfg.validation)
         return dm, ZPressorStepTrackerCallback()
 
     if ds.name == "dl3dv":
@@ -264,6 +267,7 @@ def build_module(cfg: DictConfig, eval_mode: bool) -> GlobalSplatModule:
         lr_milestones=tuple(cfg.optimizer.get("lr_milestones", [])),
         lr_gamma=cfg.optimizer.get("lr_gamma", 0.1),
         quantile_training=cfg.optimizer.get("quantile_training", "deterministic"),
+        validation_cfg=(OmegaConf.to_container(cfg.validation, resolve=True) if "validation" in cfg else None),
     )
 
 
@@ -283,6 +287,9 @@ def main(cfg: DictConfig) -> None:
         torch.backends.cudnn.benchmark = False
     lit = build_module(cfg, eval_mode=is_test)
     datamodule, step_tracker_cb = build_datamodule(cfg)
+    if is_test and cfg.test.get("scene_subset_path", None):
+        from globalsplat.dataset.test_subset import load_scene_subset
+        datamodule.test_scene_ids = load_scene_subset(cfg.test.scene_subset_path)
 
     # Versioned run dirs: each run lands in <root>/<exp>/version_<N>/ (checkpoints)
     # and logs/<exp>/version_<N>/ (TensorBoard), so re-running the same experiment
@@ -319,6 +326,11 @@ def main(cfg: DictConfig) -> None:
     )
 
     tr = cfg.trainer
+    callbacks = [step_tracker_cb] + ([] if is_test else [ckpt_cb, GsplatWarmupCallback()])
+    reset_timer = tr.get("reset_time_on_resume", False)
+    if not is_test and reset_timer and tr.get("max_time"):
+        from globalsplat.pilot import InvocationTimer
+        callbacks.append(InvocationTimer(duration=tr.max_time, interval="step"))
     trainer = pl.Trainer(
         logger=logger,
         strategy=tr.strategy,
@@ -333,8 +345,10 @@ def main(cfg: DictConfig) -> None:
         max_steps=tr.max_steps,
         max_epochs=-1,
         enable_checkpointing=not is_test,
-        callbacks=[step_tracker_cb] + ([] if is_test else [ckpt_cb, GsplatWarmupCallback()]),
+        callbacks=callbacks,
         check_val_every_n_epoch=tr.check_val_every_n_epoch,
+        val_check_interval=tr.get("val_check_interval", 1.0),
+        max_time=None if reset_timer else tr.get("max_time", None),
         limit_val_batches=tr.limit_val_batches,
         # Make the test progress-bar total match the scenes actually evaluated
         # (the eval index), not the full chunk set the upstream __len__ reports.
@@ -407,6 +421,10 @@ def main(cfg: DictConfig) -> None:
             )
             resize_registered_buffers(lit, state_dict)
         missing, unexpected = lit.load_state_dict(state_dict, strict=False)
+        if getattr(getattr(getattr(lit.model, "feature_codec", None), "config", None), "codec_type", None) == "hyper1d":
+            if any(key.startswith("model.") for key in missing) or unexpected:
+                raise RuntimeError(f"Hyper1D model checkpoint mismatch: missing={missing}, unexpected={unexpected}")
+            lit.hyper1d_provenance = state.get("hyper1d_provenance", {})
         if cfg.checkpointing.get("reset_score_mean_offset", False):
             from globalsplat.compression.checkpoint import reset_score_mean_offset_head
 
@@ -421,6 +439,12 @@ def main(cfg: DictConfig) -> None:
         rank_zero_print(f"Starting training from scratch "
               f"(version_{run.version}; checkpoints -> {run.ckpt_dir}).")
     trainer.fit(lit, datamodule=datamodule, ckpt_path=run.resume_ckpt)
+    if cfg.checkpointing.get("save_on_train_end", False):
+        # Timer may stop between periodic checkpoints. Keep optimizer/scheduler state.
+        trainer.save_checkpoint(os.path.join(run.ckpt_dir, "last.ckpt"))
+    if (cfg.get("validation", {}).get("run_on_train_end", False)
+            and getattr(lit, "_last_actual_validation_step", None) != trainer.global_step):
+        trainer.validate(lit, datamodule=datamodule, ckpt_path=None)
 
 
 if __name__ == "__main__":

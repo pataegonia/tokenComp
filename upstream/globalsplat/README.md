@@ -58,6 +58,9 @@ Deeper guides live under [`docs/`](./docs):
 [troubleshooting](./docs/TROUBLESHOOTING.md) ·
 [optional NFC-GS scene-token codec](./docs/NFCGS_CODEC.md).
 
+A separate full-feature Hyper1D codec and its single-GPU 12-hour pilot are described
+in [the Hyper1D implementation and training guide](./docs/NFCGS_HYPER1D_12H.md).
+
 ## Quickstart
 
 **Requirements:** Linux, Python 3.10, a CUDA 12.x toolkit (`nvcc` on `PATH`), and

@@ -1,6 +1,9 @@
 """Reconstructed NFC-GS observable low-rank scene codec."""
 
-from .bitstream import SceneBitstream
+from .bitstream import SceneBitstream, Hyper1DSceneBitstream, scene_bytes_by_stream
+from .hyper1d_config import Hyper1DConfig
+from .hyper1d import FeatureHyperprior1DCodec
+from .factory import build_feature_codec, codec_config_from_mapping
 from .checkpoint import (
     LoadedCodec,
     load_feature_codec_checkpoint,
@@ -16,6 +19,12 @@ from .config import CodecConfig
 from .morton import MortonOrder, invert_permutation, morton_order_3d
 
 __all__ = [
+    "Hyper1DConfig",
+    "FeatureHyperprior1DCodec",
+    "Hyper1DSceneBitstream",
+    "scene_bytes_by_stream",
+    "build_feature_codec",
+    "codec_config_from_mapping",
     "CodecConfig",
     "CodecOutput",
     "CompressedScene",

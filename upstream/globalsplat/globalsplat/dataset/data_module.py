@@ -182,10 +182,15 @@ class UpstreamBackedDataModule(pl.LightningDataModule):
 
         dm = self._dm
         loader_cfg = getattr(dm.data_loader_cfg, stage)
-        dataset = get_dataset(dm.dataset_cfg, stage, dm.step_tracker)
+        fixed_val = stage == "val" and getattr(self, "fixed_validation_cfg", None) is not None
+        dataset = get_dataset(self.fixed_validation_cfg if fixed_val else dm.dataset_cfg,
+                              "test" if fixed_val else stage, dm.step_tracker)
+        if stage == "test" and getattr(self, "test_scene_ids", None) is not None:
+            from .test_subset import restrict_test_scenes
+            restrict_test_scenes(dataset, self.test_scene_ids)
         dataset = dm.dataset_shim(dataset, stage)
 
-        if stage == "val":  # upstream limits validation to one batch per scene
+        if stage == "val" and not fixed_val:  # upstream limits validation to one batch per scene
             dataset = updm.ValidationWrapper(dataset, 1)
 
         is_iter = isinstance(dataset, IterableDataset)
@@ -224,11 +229,14 @@ class UpstreamBackedDataModule(pl.LightningDataModule):
             pin_memory=self._pin_memory,
             collate_fn=self._collate_fn(),
         )
+        if fixed_val:
+            # A single deterministic stream prevents iterable-worker duplicates.
+            kwargs.update(batch_size=1, num_workers=0, persistent_workers=False)
         if stage == "train":
             kwargs["shuffle"] = not is_iter
         elif stage == "test":
             kwargs["shuffle"] = False
-        if loader_cfg.num_workers > 0 and self._prefetch_factor is not None:
+        if kwargs["num_workers"] > 0 and self._prefetch_factor is not None:
             kwargs["prefetch_factor"] = self._prefetch_factor
 
         loader_cls = (
