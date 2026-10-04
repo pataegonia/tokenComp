@@ -14,6 +14,31 @@ spec.loader.exec_module(runner)
 
 
 class DistributedRunnerTests(unittest.TestCase):
+    def test_minimal_four_gpu_recipe_keeps_effective_batch_and_optimizer_schedule(self):
+        argv = ["train", "--checkpoint", "split.ckpt", "--rate-lambda", "0.0256",
+                "--score-path", "minimal", "--allow-score-path-conversion",
+                "--devices", "4", "--launcher", "srun", "--batch-size", "2",
+                "--accumulate", "1", "--workers", "8", "--lr", "0.0001",
+                "--max-steps", "50000", "--checkpoint-every", "5000"]
+        args = runner.parse_args(argv)
+        command, _, _ = runner.build_command(args)
+        self.assertEqual(args.devices * args.batch_size * args.accumulate, 8)
+        self.assertEqual(command.count("srun"), 1)
+        for override in ("--ntasks=4", "--ntasks-per-node=4", "trainer.devices=4",
+                         "trainer.strategy=ddp_find_unused_parameters_true",
+                         "optimizer.batch_size=2", "trainer.accumulate_grad_batches=1",
+                         "optimizer.lr=0.0001", "optimizer.lr_milestones=[35000,45000]",
+                         "trainer.max_steps=50000", "checkpointing.every_n_train_steps=5000",
+                         "model.feature_codec.use_centering=false",
+                         "model.feature_codec.transform=linear"):
+            self.assertIn(override, command)
+        script = (ROOT / "scripts/slurm/train_nfcgs_score_minimal_v11.slurm").read_text()
+        for setting in ("--nodelist=ariel-v11", "--gres=gpu:normal:4",
+                        "--ntasks-per-node=4", "--cpus-per-task=8",
+                        "--devices 4 --launcher srun", "--batch-size 2 --accumulate 1"):
+            self.assertIn(setting, script)
+        self.assertNotIn("exec srun", script)
+
     def scratch_args(self):
         return ["train", "--from-scratch", "--devices", "8", "--launcher", "srun", "--accumulate", "1"]
 
@@ -75,5 +100,5 @@ class DistributedRunnerTests(unittest.TestCase):
 
     def test_v12_allocation_matches_runner(self):
         script = (ROOT / "scripts/slurm/train_nfcgs_joint_v12.slurm").read_text()
-        for setting in ("--nodelist=ariel-v12", "--gres=gpu:8", "--ntasks-per-node=8", "--devices 8", "--launcher srun", "--accumulate 1"):
+        for setting in ("--nodelist=ariel-v12", "--gres=gpu:normal:8", "--ntasks-per-node=8", "--devices 8", "--launcher srun", "--accumulate 1"):
             self.assertIn(setting, script)

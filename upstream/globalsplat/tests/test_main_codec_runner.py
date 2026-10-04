@@ -105,6 +105,41 @@ class MainRunnerTests(unittest.TestCase):
             run.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_minimal_score_path_and_individual_switches(self):
+        args = runner.parse_args([
+            "train", "--checkpoint", "full.ckpt", "--score-path", "minimal",
+            "--allow-score-path-conversion",
+        ])
+        config = self.composed(args)
+        codec = CodecConfig.from_mapping(config.model.feature_codec)
+        self.assertFalse(codec.use_centering)
+        self.assertFalse(codec.use_score_norm)
+        self.assertFalse(codec.score_mean_condition)
+        self.assertFalse(codec.score_channel_context)
+        self.assertEqual(codec.transform, "linear")
+        self.assertTrue(codec.use_residual)
+        self.assertTrue(codec.score_spatial_context)
+        self.assertEqual(codec.score_spatial_entropy, "split")
+        self.assertTrue(config.checkpointing.allow_score_path_conversion)
+        self.assertTrue(config.model.freeze_globalsplat)
+        args = runner.parse_args([
+            "eval", "--checkpoint", "minimal.ckpt", "--score-path", "minimal",
+        ])
+        self.assertFalse(self.composed(args).checkpointing.allow_score_path_conversion)
+        args = runner.parse_args(["eval", "--no-centering"])
+        codec = CodecConfig.from_mapping(self.composed(args).model.feature_codec)
+        self.assertFalse(codec.score_mean_condition)
+        self.assertTrue(codec.score_channel_context)
+        self.assertTrue(codec.use_score_norm)
+        self.assertEqual(codec.transform, "nonlinear")
+        for argv in (
+            ["eval", "--allow-score-path-conversion"],
+            ["train", "--checkpoint", "full.ckpt", "--resume", "--allow-score-path-conversion"],
+            ["eval", "--no-centering", "--mean-context"],
+        ):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                runner.parse_args(argv)
+
     def test_training_requires_explicit_checkpoint(self):
         with self.assertRaises(SystemExit):
             runner.parse_args(["train"])

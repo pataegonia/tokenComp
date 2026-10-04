@@ -56,6 +56,16 @@ def parse_args(argv=None):
     parser.add_argument("--workers", type=int)
     parser.add_argument("--scope", choices=("all", "score_probability"), default="all")
     parser.add_argument(
+        "--score-path", choices=("full", "minimal"), default="full",
+        help="minimal disables centering, score norm, mean/channel context and MLPs; keeps MSH/spatial Split",
+    )
+    for flag in ("centering", "score-norm", "mean-context", "channel-context", "nonlinear"):
+        parser.add_argument(f"--{flag}", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--allow-score-path-conversion", action="store_true",
+        help="allow score switch changes only for a weights-only training warm start",
+    )
+    parser.add_argument(
         "--no-score-mean-offset",
         action="store_true",
         help="ablate b_mean while retaining mean-conditioned quantization step d",
@@ -83,6 +93,20 @@ def parse_args(argv=None):
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.allow_score_path_conversion and (
+        args.mode != "train" or args.checkpoint is None or args.resume or args.from_scratch
+    ):
+        parser.error("--allow-score-path-conversion requires weights-only training from --checkpoint")
+    default_enabled = args.score_path == "full"
+    requested_mean_context = args.mean_context
+    for name in ("centering", "score_norm", "mean_context", "channel_context", "nonlinear"):
+        if getattr(args, name) is None:
+            setattr(args, name, default_enabled)
+    if not args.centering:
+        # No scene mean can condition the decoder without a transmitted mean.
+        if requested_mean_context is True:
+            parser.error("--mean-context requires --centering")
+        args.mean_context = False
     if args.from_scratch and (args.mode != "train" or args.checkpoint or args.resume):
         parser.error("--from-scratch requires train without --checkpoint or --resume")
     args.joint = args.joint or args.from_scratch
@@ -164,6 +188,11 @@ def build_command(args):
             "ddp_find_unused_parameters_true" if args.devices > 1 else "auto"
         ),
         f"hydra.run.dir={(output / 'hydra').as_posix()}",
+        f"model.feature_codec.use_centering={str(args.centering).lower()}",
+        f"model.feature_codec.use_score_norm={str(args.score_norm).lower()}",
+        f"model.feature_codec.score_mean_condition={str(args.mean_context).lower()}",
+        f"model.feature_codec.score_channel_context={str(args.channel_context).lower()}",
+        f"model.feature_codec.transform={'nonlinear' if args.nonlinear else 'linear'}",
     ]
     if args.mode == "eval":
         command += [
@@ -184,6 +213,8 @@ def build_command(args):
             "seed=0",
         ]
     else:
+        if args.allow_score_path_conversion:
+            command.append("checkpointing.allow_score_path_conversion=true")
         if args.no_score_mean_offset and checkpoint is not None and not args.resume:
             command.append("checkpointing.allow_score_mean_offset_conversion=true")
         if args.reset_score_mean_offset:

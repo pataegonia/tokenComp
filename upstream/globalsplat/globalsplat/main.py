@@ -274,6 +274,11 @@ def main(cfg: DictConfig) -> None:
     rank_zero_print(OmegaConf.to_yaml(cfg))
 
     is_test = str(cfg.mode) == "test"
+    if cfg.checkpointing.get("allow_score_path_conversion", False) and (
+        is_test or cfg.checkpointing.get("resume", False)
+        or not cfg.checkpointing.get("load")
+    ):
+        raise ValueError("score-path conversion requires weights-only training from a checkpoint")
     if is_test:
         # cudnn.benchmark (enabled at import for training speed) autotunes conv
         # algorithms on the first forward, allocating large scratch workspaces.
@@ -397,7 +402,12 @@ def main(cfg: DictConfig) -> None:
                 validate_score_mean_offset_mode,
             )
 
-            validate_feature_codec_checkpoint(state, lit.model.feature_codec.config)
+            validate_feature_codec_checkpoint(
+                state, lit.model.feature_codec.config,
+                allow_score_path_conversion=bool(
+                    cfg.checkpointing.get("allow_score_path_conversion", False)
+                ),
+            )
             validate_score_mean_offset_mode(
                 state,
                 lit.model.feature_codec,

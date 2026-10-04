@@ -5,8 +5,7 @@ import argparse
 
 import torch
 
-from globalsplat.compression.config import CodecConfig
-from globalsplat.compression.checkpoint import validate_feature_codec_checkpoint
+from globalsplat.compression.checkpoint import infer_config, validate_feature_codec_checkpoint
 
 
 def main() -> None:
@@ -22,7 +21,12 @@ def main() -> None:
         raise ValueError(
             "evaluation requires an integrated GlobalSplat codec checkpoint"
         )
-    config = CodecConfig()
+    raw_state = checkpoint.get("state_dict", checkpoint)
+    feature_state = {
+        key.removeprefix("model.feature_codec."): value
+        for key, value in raw_state.items() if key.startswith("model.feature_codec.")
+    }
+    config = infer_config(feature_state, checkpoint.get("feature_codec_config"))
     validate_feature_codec_checkpoint(checkpoint, config)
     step = checkpoint.get("global_step")
     if args.step != "auto" and (step is None or int(step) != int(args.step)):

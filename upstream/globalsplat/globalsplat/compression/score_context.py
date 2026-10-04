@@ -28,12 +28,15 @@ class ContextualScoreEntropy(nn.Module):
     )
 
     def __init__(
-        self, *, rank: int, scene_channels: int, slice_channels: int, hidden: int
+        self, *, rank: int, scene_channels: int, slice_channels: int, hidden: int,
+        mean_condition: bool = True, channel_context: bool = True,
     ) -> None:
         super().__init__()
         self.rank = int(rank)
         self.scene_channels = int(scene_channels)
         self.slice_channels = int(slice_channels)
+        self.mean_condition = mean_condition
+        self.channel_context = channel_context
         self.group_sizes = tuple(
             (
                 min(self.slice_channels, self.rank - start)
@@ -76,8 +79,10 @@ class ContextualScoreEntropy(nn.Module):
     @property
     def flags(self) -> int:
         flags = 0
-        flags |= self.FLAG_MEAN
-        flags |= self.FLAG_CHANNEL
+        if self.mean_condition:
+            flags |= self.FLAG_MEAN
+        if self.channel_context:
+            flags |= self.FLAG_CHANNEL
         flags |= self.FLAG_SPATIAL
         flags |= self.FLAG_SPATIAL_ENTROPY_SPLIT
         if not self.mean_offset_enabled:
@@ -96,6 +101,9 @@ class ContextualScoreEntropy(nn.Module):
         return even + tuple(self.spatial_odd_entropies)
 
     def _scene_parameters(self, scene_mean: Tensor) -> tuple[Tensor, Tensor]:
+        if not self.mean_condition:
+            shape = (scene_mean.shape[0], self.rank)
+            return scene_mean.new_zeros(shape), scene_mean.new_ones(shape)
         parameters = self.mean_conditioner(scene_mean)
         offset, log_step = parameters.chunk(2, dim=-1)
         if not self.mean_offset_enabled:
@@ -113,7 +121,7 @@ class ContextualScoreEntropy(nn.Module):
         group_index: int,
     ) -> Tensor:
         base = offset[:, start : start + width, None, None].expand(-1, -1, 1, points)
-        if group_index > 0:
+        if self.channel_context and group_index > 0:
             previous = torch.cat(decoded_groups, dim=1)
             base = base + self.channel_predictors[group_index - 1](previous)
         return base

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -14,6 +14,10 @@ from .config import CodecConfig
 
 
 FEATURE_PREFIXES = ("model.feature_codec.", "feature_codec.")
+SCORE_PATH_FIELDS = (
+    "use_centering", "use_score_norm", "transform",
+    "score_mean_condition", "score_channel_context",
+)
 
 
 @dataclass(slots=True)
@@ -43,7 +47,11 @@ def _feature_state_dict(
 def infer_config(
     state: Mapping[str, Tensor], metadata: Mapping[str, Any] | None = None
 ) -> CodecConfig:
-    """Recover Full P0+Split tensor dimensions and validate saved metadata."""
+    """Recover dimensions; ablation switches live in checkpoint metadata.
+
+    Disabled branches retain frozen compatibility tensors, so their presence
+    cannot determine the active score path. Older metadata defaults to full.
+    """
     if "shared_synthesis_basis" not in state:
         raise ValueError("checkpoint is not the supported untied-synthesis codec")
     required = (
@@ -135,6 +143,7 @@ def _validate_config(
             "score_spatial_predictor",
             "score_spatial_entropy",
             "score_spatial_hidden",
+            *SCORE_PATH_FIELDS,
         }
     )
     expected_values = expected.to_dict()
@@ -184,13 +193,18 @@ def _validate_spatial_predictor_state(
 
 
 def validate_feature_codec_checkpoint(
-    checkpoint: Mapping[str, Any], config: CodecConfig
+    checkpoint: Mapping[str, Any], config: CodecConfig, *,
+    allow_score_path_conversion: bool = False,
 ) -> None:
     """Require the main codec architecture and matching saved metadata."""
     state, _ = _feature_state_dict(checkpoint.get("state_dict", checkpoint))
     metadata = checkpoint.get("feature_codec_config")
     actual = infer_config(state, metadata)
-    _validate_config(actual, config, include_flags=metadata is not None)
+    if allow_score_path_conversion:
+        # Only explicitly requested score switches may change in a weights-only
+        # warm start. Dimensions, MSH and every other setting must still match.
+        actual = replace(actual, **{key: getattr(config, key) for key in SCORE_PATH_FIELDS})
+    _validate_config(actual, config, include_flags=True)
 
 
 def validate_score_mean_offset_mode(

@@ -20,6 +20,8 @@ class CodecConfig:
     morton_bits: int = 10
     use_morton: bool = True
     use_residual: bool = True
+    use_centering: bool = True
+    use_score_norm: bool = True
     transform: str = "nonlinear"
     transform_hidden: int = 32
     score_mean_condition: bool = True
@@ -32,15 +34,10 @@ class CodecConfig:
     score_context_hidden: int = 64
 
     def __post_init__(self) -> None:
-        # Keep these fields so existing checkpoints deserialize unchanged, but
-        # expose only the selected architecture. Historical implementations live
-        # under archive/codec_experiments_20260915.
+        # MSH residual and the even/odd spatial Split path remain mandatory.
         required = {
             "use_morton": True,
             "use_residual": True,
-            "transform": "nonlinear",
-            "score_mean_condition": True,
-            "score_channel_context": True,
             "score_spatial_context": True,
             "score_spatial_predictor": "linear",
             "score_spatial_entropy": "split",
@@ -52,6 +49,13 @@ class CodecConfig:
                     f"main codec requires {name}={expected!r}; got {actual!r}. "
                     "Other codec paths have been archived."
                 )
+        for name in ("use_centering", "use_score_norm", "score_mean_condition", "score_channel_context"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be a boolean")
+        if self.transform not in ("linear", "nonlinear"):
+            raise ValueError("transform must be linear or nonlinear")
+        if not self.use_centering and self.score_mean_condition:
+            raise ValueError("use_centering=false requires score_mean_condition=false (no mean is transmitted)")
         for name in (
             "texture_channels",
             "geometry_channels",

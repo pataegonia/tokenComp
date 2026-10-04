@@ -50,7 +50,7 @@ def small_config():
 def reference_pair():
     config = small_config()
     torch.manual_seed(101)
-    old = reference.ObservableLowRank1DCodec(reference.CodecConfig(**config.to_dict()))
+    old = reference.ObservableLowRank1DCodec(reference_config(config))
     torch.manual_seed(101)
     new = ObservableLowRank1DCodec(config)
     # Exercise trained/nonzero predictors, not just their zero initialization.
@@ -72,6 +72,14 @@ def reference_pair():
     return old, new
 
 
+def reference_config(config):
+    # Historical code predates explicit centering/score-norm switches.
+    return reference.CodecConfig(**{
+        key: value for key, value in config.to_dict().items()
+        if key in reference.CodecConfig.__dataclass_fields__
+    })
+
+
 class MainCodecTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -81,11 +89,8 @@ class MainCodecTests(unittest.TestCase):
         config = CodecConfig()
         self.assertEqual((config.rank, config.transform_hidden), (56, 32))
         for key, value in {
-            "transform": "linear",
             "use_residual": False,
             "use_morton": False,
-            "score_mean_condition": False,
-            "score_channel_context": False,
             "score_spatial_context": False,
             "score_spatial_predictor": "residual7",
             "score_spatial_entropy": "shared",
@@ -103,7 +108,7 @@ class MainCodecTests(unittest.TestCase):
         config = small_config()
         torch.manual_seed(107)
         old = reference.ObservableLowRank1DCodec(
-            reference.CodecConfig(**config.to_dict())
+            reference_config(config)
         )
         torch.manual_seed(107)
         new = ObservableLowRank1DCodec(config)
