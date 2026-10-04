@@ -28,10 +28,11 @@ def cpu_threads():
     torch.set_num_threads(previous)
 
 
+@pytest.mark.parametrize("architecture", ["legacy", "plain4"])
 @pytest.mark.parametrize("strides", [(2, 2), (2, 1)])
 @pytest.mark.parametrize("points", [1, 31, 32, 33, 4096])
-def test_variable_length_entropy_roundtrip(points, strides):
-    codec = FeatureHyperprior1DCodec(tiny_config(strides=strides)).eval()
+def test_variable_length_entropy_roundtrip(points, strides, architecture):
+    codec = FeatureHyperprior1DCodec(tiny_config(strides=strides, architecture=architecture)).eval()
     codec.update(force=True)
     t, g = torch.randn(1, points, 4), torch.randn(1, points, 4)
     output = codec(t, g)
@@ -51,8 +52,9 @@ def test_variable_length_entropy_roundtrip(points, strides):
         SceneBitstream.unpack(compressed.data)
 
 
-def test_signed_hyper_analysis_and_gradients():
-    codec = FeatureHyperprior1DCodec(tiny_config()).train()
+@pytest.mark.parametrize("architecture", ["legacy", "plain4"])
+def test_signed_hyper_analysis_and_gradients(architecture):
+    codec = FeatureHyperprior1DCodec(tiny_config(architecture=architecture)).train()
     captured = {}
     handle = codec.h_a.register_forward_pre_hook(lambda module, args: captured.update(y=args[0].detach().clone()))
     t, g = torch.randn(2, 33, 4), torch.randn(2, 33, 4)
@@ -64,6 +66,8 @@ def test_signed_hyper_analysis_and_gradients():
     (output.texture.square().mean() + output.geometry_observable.square().mean() + output.estimated_bits / 10000).backward()
     for module in (codec.geometry_projection, codec.analysis_adapter, codec.g_a, codec.g_s,
                    codec.h_a, codec.h_s, codec.synthesis_adapter, codec.entropy_bottleneck):
+        if isinstance(module, torch.nn.Identity):
+            continue
         gradients = [p.grad for p in module.parameters() if p.grad is not None]
         assert gradients and all(torch.isfinite(g).all() for g in gradients)
         assert sum(g.abs().sum() for g in gradients) > 0
@@ -72,10 +76,11 @@ def test_signed_hyper_analysis_and_gradients():
         codec.set_trainable_scope("score_probability")
 
 
-def test_morton_optional_and_sender_amp_parity():
+@pytest.mark.parametrize("architecture", ["legacy", "plain4"])
+def test_morton_optional_and_sender_amp_parity(architecture):
     t, g = torch.randn(1, 33, 4), torch.randn(1, 33, 4)
     for morton in (False, True):
-        codec = FeatureHyperprior1DCodec(tiny_config(use_morton=morton)).eval()
+        codec = FeatureHyperprior1DCodec(tiny_config(use_morton=morton, architecture=architecture)).eval()
         codec.update()
         positions = torch.randn(1, 33, 3) if morton else torch.randn(7)
         compressed = codec.compress(t, g, positions)
@@ -133,9 +138,10 @@ def test_stream_rejects_malformed_metadata_before_entropy_decode():
         other.decompress(data)
 
 
+@pytest.mark.parametrize("architecture", ["legacy", "plain4"])
 @pytest.mark.parametrize("normalization", ["none", "calibrated"])
-def test_checkpoint_strict_routing_and_dynamic_cdf_reload(tmp_path, normalization):
-    codec = FeatureHyperprior1DCodec(tiny_config(input_norm=normalization)).eval()
+def test_checkpoint_strict_routing_and_dynamic_cdf_reload(tmp_path, normalization, architecture):
+    codec = FeatureHyperprior1DCodec(tiny_config(input_norm=normalization, architecture=architecture)).eval()
     if normalization == "calibrated":
         codec.f_mean.fill_(0.25)
         codec.f_std.fill_(1.5)
@@ -154,6 +160,9 @@ def test_checkpoint_strict_routing_and_dynamic_cdf_reload(tmp_path, normalizatio
         validate_feature_codec_checkpoint(checkpoint, CodecConfig())
     with pytest.raises(ValueError, match="configuration"):
         validate_feature_codec_checkpoint(checkpoint, replace(codec.config, strides=(2, 1)))
+    with pytest.raises(ValueError, match="configuration"):
+        validate_feature_codec_checkpoint(checkpoint, replace(codec.config,
+            architecture="plain4" if architecture == "legacy" else "legacy"))
     with pytest.raises(ValueError, match="require"):
         infer_feature_codec_config(codec.state_dict())
     bad = copy.deepcopy(codec.config.to_dict())
@@ -163,6 +172,49 @@ def test_checkpoint_strict_routing_and_dynamic_cdf_reload(tmp_path, normalizatio
     bad["codec_type"] = "unknown"
     with pytest.raises(ValueError, match="unsupported"):
         infer_feature_codec_config(codec.state_dict(), bad)
+
+
+def test_old_metadata_restores_legacy_and_cannot_disguise_plain4(tmp_path):
+    legacy = FeatureHyperprior1DCodec(tiny_config()).eval()
+    legacy.update()
+    metadata = legacy.config.to_dict()
+    del metadata["architecture"]
+    state = legacy.state_dict()
+    path = tmp_path / "old_pilot.ckpt"
+    torch.save({"state_dict": state, "feature_codec_config": metadata}, path)
+    loaded = load_feature_codec_checkpoint(path)
+    assert loaded.config.architecture == "legacy"
+    validate_feature_codec_checkpoint({"state_dict": state, "feature_codec_config": metadata}, legacy.config)
+    for key, value in state.items():
+        torch.testing.assert_close(loaded.codec.state_dict()[key], value, rtol=0, atol=0)
+    plain = FeatureHyperprior1DCodec(tiny_config(architecture="plain4"))
+    with pytest.raises(ValueError, match="state mismatch"):
+        infer_feature_codec_config(plain.state_dict(), metadata)
+
+
+def test_legacy_optimizer_parameter_order_matches_saved_pilots():
+    codec = FeatureHyperprior1DCodec(tiny_config())
+    # Lightning/Adam restore positional states, so strict tensor loading alone
+    # would miss a registration-order regression when maintaining old pilots.
+    parameter_modules = list(dict.fromkeys(name.split(".", 1)[0]
+        for name, _ in codec.named_parameters()))
+    assert parameter_modules == ["geometry_projection", "analysis_adapter", "g_a", "g_s",
+                                 "h_a", "h_s", "synthesis_adapter", "entropy_bottleneck"]
+
+
+def test_plain4_removes_adapter_parameters_and_keeps_downsampling():
+    codec = FeatureHyperprior1DCodec(tiny_config(architecture="plain4"))
+    assert isinstance(codec.analysis_adapter, torch.nn.Identity)
+    assert isinstance(codec.synthesis_adapter, torch.nn.Identity)
+    assert not any("adapter." in key for key in codec.state_dict())
+    t, g = torch.randn(1, 33, 4), torch.randn(1, 33, 4)
+    features, _ = codec._input(t, g, None)
+    y = codec.g_a(features)
+    assert y.shape == (1, 6, 1, 9)
+    assert codec.g_s(y).shape == (1, 6, 1, 36)
+    assert Hyper1DConfig.for_architecture("plain4").n == 256
+    assert Hyper1DConfig.for_architecture("plain4").m == 512
+    assert Hyper1DConfig.for_architecture("legacy") == Hyper1DConfig()
 
 
 def test_normalization_modes_same_keys_but_validate_on_load():
@@ -179,7 +231,8 @@ def test_normalization_modes_same_keys_but_validate_on_load():
 
 
 @pytest.mark.parametrize("values", [{"strides": (1, 2)}, {"adapter_hidden": 4},
-                                    {"input_norm": "scene"}, {"use_morton": 1}])
+                                    {"input_norm": "scene"}, {"use_morton": 1},
+                                    {"architecture": "unknown"}])
 def test_config_rejects_unsupported_modes(values):
     with pytest.raises(ValueError):
         Hyper1DConfig(**values)

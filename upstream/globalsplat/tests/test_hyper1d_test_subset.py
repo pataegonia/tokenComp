@@ -81,3 +81,20 @@ def test_sampled_eval_command_composes_without_changing_training(tmp_path):
     assert cfg.test.save_image and cfg.test.save_gt_image
     with pytest.raises(SystemExit):
         runner.parse_args(["train", "--checkpoint", "codec.ckpt", "--sample-test"])
+
+
+def test_full_test_command_has_no_scene_limit_or_sampling(tmp_path):
+    from hydra import compose, initialize_config_dir
+    spec = importlib.util.spec_from_file_location("run_hyper1d", ROOT / "scripts/run_hyper1d.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    args = runner.parse_args(["eval", "--checkpoint", "codec.ckpt", "--all-test"])
+    command = runner.build_command(args, tmp_path, Path("codec.ckpt"))
+    with initialize_config_dir(config_dir=str(ROOT / "config"), version_base=None):
+        cfg = compose(config_name="main", overrides=command[3:])
+    assert cfg.mode == "test" and cfg.test.max_scenes is None
+    assert cfg.dataset.eval_all_scenes and cfg.dataset.eval_index_path is None
+    assert "scene_subset_path" not in cfg.test
+    assert cfg.dataset.num_context_views == 12 and cfg.dataset.num_target_views == 8
+    with pytest.raises(SystemExit):
+        runner.parse_args(["eval", "--checkpoint", "codec.ckpt", "--all-test", "--sample-test"])

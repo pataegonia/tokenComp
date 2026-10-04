@@ -33,13 +33,14 @@ def cpu_threads():
     torch.set_num_threads(previous)
 
 
-def small_model(codec=True):
+def small_model(codec=True, architecture="legacy", paths=1, use_morton=False):
     return GlobalSplat(static_only=True, sh_degree=0, patch_size=4,
         latent_rep_token_amount=33, dim_latents=32, dim_rays=16, dim_rgb_feat=16,
         rounds=1, slot_calib_layers_per_round=1, num_heads=4, M_max=2,
         freeze_globalsplat=codec,
         feature_codec=dict(codec_type="hyper1d", geometry_observable_channels=28,
-            n=3, m=6, adapter_hidden=3) if codec else None)
+            n=3, m=6, adapter_hidden=3, architecture=architecture,
+            paths=paths, use_morton=use_morton) if codec else None)
 
 
 def sample_batch():
@@ -52,9 +53,10 @@ def sample_batch():
             "scene_info": {"scene": ["fixed_scene"]}}
 
 
-def test_qr_boundary_freezing_and_full_model_gradients(monkeypatch):
+@pytest.mark.parametrize("architecture", ["legacy", "plain4"])
+def test_qr_boundary_freezing_and_full_model_gradients(monkeypatch, architecture):
     source = small_model(False).eval()
-    model = small_model(True).train()
+    model = small_model(True, architecture).train()
     report = initialize_observable_from_vanilla(model, {"state_dict": source.state_dict()})
     assert report.max_reparameterization_error < 1e-6
     t, g = torch.randn(1, 33, 32), torch.randn(1, 33, 32)
@@ -76,8 +78,10 @@ def test_qr_boundary_freezing_and_full_model_gradients(monkeypatch):
     assert result.num_gaussians == 33
 
 
-def test_checkpoint_save_load_no_score_attributes():
-    model = small_model()
+@pytest.mark.parametrize("architecture", ["legacy", "plain4"])
+@pytest.mark.parametrize("paths", [1, 2])
+def test_checkpoint_save_load_no_score_attributes(architecture, paths):
+    model = small_model(architecture=architecture, paths=paths)
     model.feature_codec.update()
     module = GlobalSplatModule(model, eval_mode=True)
     module.hyper1d_provenance = {"source": "test"}
@@ -85,7 +89,7 @@ def test_checkpoint_save_load_no_score_attributes():
     module.on_save_checkpoint(checkpoint)
     assert checkpoint["feature_codec_config"]["codec_type"] == "hyper1d"
     assert "score_mean_offset_enabled" not in checkpoint
-    fresh = GlobalSplatModule(small_model(), eval_mode=True)
+    fresh = GlobalSplatModule(small_model(architecture=architecture, paths=paths), eval_mode=True)
     fresh.on_load_checkpoint(checkpoint)
     fresh.load_state_dict(checkpoint["state_dict"], strict=True)
     assert fresh.hyper1d_provenance == module.hyper1d_provenance
@@ -93,30 +97,37 @@ def test_checkpoint_save_load_no_score_attributes():
                                model.feature_codec.entropy_bottleneck._quantized_cdf)
 
 
-def test_initializer_and_calibration_cli_artifacts(tmp_path, monkeypatch):
+@pytest.mark.parametrize("architecture", ["legacy", "plain4"])
+@pytest.mark.parametrize("paths", [1, 2])
+def test_initializer_and_calibration_cli_artifacts(tmp_path, monkeypatch, architecture, paths):
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))
     initializer = __import__("initialize_hyper1d_from_vanilla")
     calibration = __import__("calibrate_hyper1d")
-    monkeypatch.setattr(initializer, "GlobalSplat", lambda **kwargs: small_model())
+    monkeypatch.setattr(initializer, "GlobalSplat", lambda **kwargs:
+                        small_model(architecture=kwargs["feature_codec"]["architecture"],
+                                    paths=kwargs["feature_codec"]["paths"]))
     vanilla = tmp_path / "vanilla.ckpt"
     source = small_model(False).state_dict()
     torch.save({"state_dict": source}, vanilla)
     initial = tmp_path / "initial.ckpt"
-    initializer.main(["--vanilla", str(vanilla), "--output", str(initial)])
+    initializer.main(["--vanilla", str(vanilla), "--output", str(initial), "--architecture", architecture,
+                      "--paths", str(paths)])
     artifact = torch.load(initial, weights_only=False)
     assert len(artifact["hyper1d_provenance"]["vanilla_checkpoint_sha256"]) == 64
     assert artifact["feature_codec_config"]["input_norm"] == "none"
+    assert artifact["feature_codec_config"]["architecture"] == architecture
+    assert artifact["feature_codec_config"]["paths"] == paths
     wrong_source = dict(source, scene_tokens=source["scene_tokens"][:1])
     wrong_path = tmp_path / "wrong.ckpt"
     torch.save({"state_dict": wrong_source}, wrong_path)
     with pytest.raises(ValueError, match="shapes"):
-        initializer.main(["--vanilla", str(wrong_path), "--output", str(tmp_path / "bad.ckpt")])
+        initializer.main(["--vanilla", str(wrong_path), "--output", str(tmp_path / "bad.ckpt"), "--architecture", architecture])
     root = tmp_path / "re10k"
     (root / "train").mkdir(parents=True)
     (root / "train/index.json").write_text("{}")
     first, second = sample_batch(), sample_batch()
     second["scene_info"]["scene"] = ["another_scene"]
-    monkeypatch.setattr(calibration, "build_model", lambda cfg: small_model())
+    monkeypatch.setattr(calibration, "build_model", lambda cfg: small_model(architecture=architecture, paths=paths))
     monkeypatch.setattr(calibration, "build_datamodule", lambda cfg:
         (SimpleNamespace(train_dataloader=lambda: [first, first, second]), None))
     calibrated = tmp_path / "calibrated.ckpt"
@@ -145,8 +156,10 @@ def install_mock_metrics(module, monkeypatch):
     module.log = lambda *args, **kwargs: None
 
 
-def test_actual_test_and_validation_byte_reports(tmp_path, monkeypatch):
-    module = GlobalSplatModule(small_model().eval(), eval_mode=True, final_stage=0,
+@pytest.mark.parametrize("architecture", ["legacy", "plain4"])
+@pytest.mark.parametrize("paths", [1, 2])
+def test_actual_test_and_validation_byte_reports(tmp_path, monkeypatch, architecture, paths):
+    module = GlobalSplatModule(small_model(architecture=architecture, paths=paths, use_morton=paths == 2).eval(), eval_mode=True, final_stage=0,
         test_cfg={"actual_bitstream": True, "output_path": str(tmp_path / "test")},
         validation_cfg={"actual_bitstream": True, "output_path": str(tmp_path / "val")},
         experiment_name="hyper1d_cpu")
@@ -157,8 +170,10 @@ def test_actual_test_and_validation_byte_reports(tmp_path, monkeypatch):
     module.validation_step(batch, 0)
     module.on_validation_epoch_end()
     row = json.loads((tmp_path / "val/step000002000.json").read_text())[0]
-    assert row["actual_y_bytes"] > 0 and row["actual_z_bytes"] > 0
-    assert row["actual_container_bytes"] == 112 and "entropy_bit_gap" in row
+    streams = ["y", "z"] if paths == 1 else ["base_y", "base_z", "residual_y", "residual_z"]
+    assert all(row[f"actual_{name}_bytes"] > 0 for name in streams)
+    assert row["actual_container_bytes"] == (112 if paths == 1 else 172) and "entropy_bit_gap" in row
+    assert row["actual_bytes"] == row["actual_container_bytes"] + sum(row[f"actual_{name}_bytes"] for name in streams)
     module.on_validation_start()
     module.validation_step(batch, 0)
     module.on_validation_epoch_end()  # identical manifest accepted
@@ -166,8 +181,8 @@ def test_actual_test_and_validation_byte_reports(tmp_path, monkeypatch):
     module.test_step(batch, 0)
     module.on_test_end()
     report = json.loads((tmp_path / "test/hyper1d_cpu/scores_all_avg.json").read_text())
-    assert report["actual_y_bytes"] > 0 and report["actual_z_bytes"] > 0
-    assert report["actual_container_bytes"] == 112
+    assert all(report[f"actual_{name}_bytes"] > 0 for name in streams)
+    assert report["actual_container_bytes"] == (112 if paths == 1 else 172)
     module.test_cfg["score_context_diagnostics"] = True
     with pytest.raises(ValueError, match="score-context"):
         module.on_test_start()
@@ -181,14 +196,35 @@ def test_pilot_config_and_runner_dry_run(tmp_path, capsys):
     assert cfg.trainer.val_check_interval == 2000 * cfg.trainer.accumulate_grad_batches
     assert cfg.optimizer.min_lr_ratio == 1 and cfg.optimizer.warmup_pct * cfg.trainer.max_steps == 1000
     assert baseline.model.feature_codec.rank == 56 and "validation" not in baseline
+    assert cfg.model.feature_codec.architecture == "plain4"
+    assert cfg.model.feature_codec.n == 256 and cfg.model.feature_codec.m == 512
     output = tmp_path / "not_created"
     runner.main(["train", "--vanilla-checkpoint", "missing.ckpt", "--output", str(output), "--dry-run"])
     text = capsys.readouterr().out
     assert "initialize_hyper1d_from_vanilla.py" in text and "trainer.max_time=00:11:00:00" in text
+    assert "--architecture plain4" in text and "model.feature_codec.architecture=plain4" in text
     assert not output.exists()
     args = runner.parse_args(["train", "--checkpoint", "codec.ckpt", "--accumulate", "2"])
     command = runner.build_command(args, output, Path("codec.ckpt"))
     assert "trainer.val_check_interval=4000" in command
+
+
+def test_runner_legacy_initialization_and_checkpoint_architecture(tmp_path, capsys):
+    from globalsplat.compression import FeatureHyperprior1DCodec, Hyper1DConfig
+    runner.main(["train", "--vanilla-checkpoint", "missing.ckpt", "--architecture", "legacy", "--dry-run"])
+    text = capsys.readouterr().out
+    assert "--architecture legacy" in text and "model.feature_codec.n=192" in text
+    assert "model.feature_codec.m=320" in text
+    legacy = FeatureHyperprior1DCodec(Hyper1DConfig(texture_channels=4, geometry_channels=4,
+        geometry_observable_channels=2, n=3, m=6, adapter_hidden=3))
+    metadata = legacy.config.to_dict()
+    del metadata["architecture"]
+    checkpoint = tmp_path / "old.ckpt"
+    torch.save({"state_dict": legacy.state_dict(), "feature_codec_config": metadata}, checkpoint)
+    runner.main(["eval", "--checkpoint", str(checkpoint), "--dry-run"])
+    assert "model.feature_codec.architecture=legacy" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        runner.parse_args(["train", "--checkpoint", str(checkpoint), "--resume", "--architecture", "plain4"])
 
 
 def test_warmup_then_constant_scheduler():

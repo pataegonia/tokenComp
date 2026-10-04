@@ -25,6 +25,7 @@ def parse_args(argv=None):
     parser.add_argument("--lambda", dest="rate_lambda", type=float, default=0.0256)
     parser.add_argument("--max-steps", type=int, default=16000, help="absolute optimizer step limit, including resumed steps")
     parser.add_argument("--train-hours", type=float, default=11.0)
+    parser.add_argument("--no-time-limit", action="store_true", help="train until max-steps; disable the training wall-clock timer")
     parser.add_argument("--warmup-steps", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--accumulate", type=int, default=4)
@@ -33,22 +34,37 @@ def parse_args(argv=None):
     parser.add_argument("--max-scenes", type=int, default=128)
     parser.add_argument("--sample-test", action="store_true", help="sample test scene IDs with a fixed seed, excluding the run's validation scenes")
     parser.add_argument("--sample-seed", type=int, default=111123)
+    parser.add_argument("--all-test", action="store_true", help="eval: process the full test split without a scene limit")
     parser.add_argument("--exclude-validation", type=Path, help="validation manifest.json; otherwise inferred from the checkpoint's run directory")
     parser.add_argument("--save-images", action="store_true", help="eval: save rendered target images and ground truth")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--precision", default="bf16-mixed")
+    parser.add_argument("--architecture", choices=("plain4", "legacy"),
+                        help="vanilla initialization only; default: plain4 (no adapters, N=256/M=512, four-layer transforms)")
+    parser.add_argument("--paths", type=int, choices=(1, 2),
+                        help="initialization only; 1: single MSH (default), 2: base MSH + residual MSH")
     parser.add_argument("--strides", choices=("4x", "2x"), default="4x", help="initialization only; checkpoint architecture is restored automatically")
     parser.add_argument("--morton", action="store_true", help="initialization only")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.mode == "eval" and (args.vanilla_checkpoint or args.resume):
         parser.error("eval requires --checkpoint without --resume")
+    if args.mode == "eval" and args.no_time_limit:
+        parser.error("--no-time-limit is train-only")
     if args.resume and not args.checkpoint:
         parser.error("--resume requires a full training --checkpoint")
+    if args.checkpoint and args.architecture is not None:
+        parser.error("--architecture requires --vanilla-checkpoint; checkpoint architecture is restored automatically")
+    if args.checkpoint and args.paths is not None:
+        parser.error("--paths requires --vanilla-checkpoint; checkpoint path count is restored automatically")
     if args.mode != "eval" and (args.sample_test or args.exclude_validation or args.save_images):
         parser.error("sample-test, exclude-validation and save-images are eval-only options")
     if args.exclude_validation and not args.sample_test:
         parser.error("--exclude-validation requires --sample-test")
+    if args.all_test and args.mode != "eval":
+        parser.error("--all-test is eval-only")
+    if args.all_test and (args.sample_test or args.exclude_validation):
+        parser.error("--all-test cannot be combined with test sampling")
     for name in ("max_steps", "warmup_steps", "batch_size", "accumulate", "validate_every", "checkpoint_every", "max_scenes"):
         if getattr(args, name) <= 0:
             parser.error(f"{name} must be positive")
@@ -71,7 +87,10 @@ def time_limit(hours):
 
 def build_command(args, output, checkpoint, codec_config=None):
     from globalsplat.compression import Hyper1DConfig
-    config = codec_config or Hyper1DConfig(strides=(2, 2) if args.strides == "4x" else (2, 1), use_morton=args.morton)
+    config = codec_config or Hyper1DConfig.for_architecture(
+        args.architecture or "plain4",
+        strides=(2, 2) if args.strides == "4x" else (2, 1), use_morton=args.morton,
+        paths=args.paths or 1)
     cmd = [sys.executable, "-m", "globalsplat.main", "+experiment=re10k_hyper1d_12h",
            f"checkpointing.load={checkpoint.resolve().as_posix()}", "checkpointing.auto_resume=false",
            f"checkpointing.resume={str(args.resume).lower()}", f"loss.rate_lambda={args.rate_lambda}",
@@ -90,7 +109,7 @@ def build_command(args, output, checkpoint, codec_config=None):
             value = "[" + ",".join(map(str, value)) + "]"
         cmd.append(f"model.feature_codec.{name}={value}")
     if args.mode == "train":
-        cmd += [f"trainer.max_steps={args.max_steps}", f"trainer.max_time={time_limit(args.train_hours)}",
+        cmd += [f"trainer.max_steps={args.max_steps}", f"trainer.max_time={'null' if args.no_time_limit else time_limit(args.train_hours)}",
                 f"optimizer.warmup_pct={args.warmup_steps / args.max_steps}",
                 f"optimizer.batch_size={args.batch_size}", f"trainer.accumulate_grad_batches={args.accumulate}",
                 f"trainer.val_check_interval={args.validate_every * args.accumulate}",
@@ -101,7 +120,8 @@ def build_command(args, output, checkpoint, codec_config=None):
                 "test.actual_bitstream=true", "test.score_context_diagnostics=false",
                 f"test.save_image={str(args.save_images).lower()}",
                 f"test.save_gt_image={str(args.save_images).lower()}",
-                f"test.max_scenes={args.max_scenes}", f"test.output_path={(output / 'evaluation').as_posix()}"]
+                f"test.max_scenes={'null' if args.all_test else args.max_scenes}",
+                f"test.output_path={(output / 'evaluation').as_posix()}"]
         if args.sample_test:
             cmd.append(f"+test.scene_subset_path={(output / 'test_sample.json').as_posix()}")
     return cmd
@@ -117,7 +137,8 @@ def main(argv=None):
     if args.vanilla_checkpoint:
         initialize = [sys.executable, str(REPO / "scripts/initialize_hyper1d_from_vanilla.py"),
                       "--vanilla", str(args.vanilla_checkpoint.resolve()), "--output", str(checkpoint),
-                      "--strides", args.strides] + (["--morton"] if args.morton else [])
+                      "--strides", args.strides, "--architecture", args.architecture or "plain4",
+                      "--paths", str(args.paths or 1)] + (["--morton"] if args.morton else [])
     if args.dry_run:
         config = None
         if args.checkpoint and args.checkpoint.is_file():

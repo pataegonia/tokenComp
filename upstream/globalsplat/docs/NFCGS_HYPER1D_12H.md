@@ -6,6 +6,11 @@
 체크포인트 재시작과 평가 집계를 확인했다. 2026-09-29에 확인한 GPU 로그에서는
 두 run이 16,000 step까지 완료했다. VRAM과 최종 수렴 여부는 아직 확인하지 않았다.
 
+2026-09-29에 Adapter를 제거하고 transform 용량을 늘린 `plain4`를 추가했다.
+새 vanilla 초기화의 기본값은 `plain4`이며, 기존 checkpoint는 저장된 설정으로 복원한다.
+이전 metadata에 `architecture`가 없으면 `legacy`로 해석하고 tensor key/shape를 엄격히 검증한다.
+아래 기존 GPU 결과는 N=192/M=320 + Adapter 구조의 결과이며, 새 구조의 학습 결과는 아니다.
+
 검증 환경은 PyTorch 2.11.0 CPU / CompressAI 1.2.8 / Lightning 2.4.0이며,
 전체 115개 테스트와 99개 subtest가 통과했다. 실제 원본
 `checkpoints/pretrained/globalsplat-re10k-32k.ckpt`에서도 초기화를 완료했다.
@@ -17,10 +22,12 @@ QR 재매개화 최대 오차는 7.16e-7, 직교성 최대 오차는 2.99e-7 이
 ## 구현
 
 - `globalsplat/compression/hyper1d.py`: 512-D appearance와 224-D projected geometry를 직접
-  부호화하는 `FeatureHyperprior1DCodec`. signed `h_a(y)`, N=192/M=320, 두 adapter,
-  stride `(2,2)` 또는 `(2,1)`. scene mean과 score/context 경로는 없다.
+  부호화하는 `FeatureHyperprior1DCodec`. signed `h_a(y)`, stride `(2,2)` 또는 `(2,1)`.
+  `plain4`는 N=256/M=512, Adapter 없음, 4층 g_a/g_s이고,
+  `legacy`는 N=192/M=320, 두 Adapter, 2층 g_a/g_s다. scene mean과 score/context 경로는 없다.
 - `Hyper1DConfig.codec_type=hyper1d`: 신규 체크포인트 종류를 명시한다. 종류 필드가 없는
-  기존 main 체크포인트는 기존 로더로 처리한다. 신규 metadata는 모든 설정 필드가 필요하다.
+  기존 main 체크포인트는 기존 로더로 처리한다. 신규 metadata는 모든 설정 필드를 저장한다.
+  기존 Hyper1D checkpoint에 없는 `architecture` 필드만 `legacy`로 보완한다.
 - `E2EH0401`: batch 1, 실제 points, SHA-256, y/z shape 교차 검증. 고정 오버헤드 112 B.
   실제 bytes는 `y + z + container`로 합산한다. Morton flag 이외의 비트는 거부한다.
 - 변환은 학습 중 BF16 AMP를 사용할 수 있고 entropy likelihood 연산은 FP32다.
@@ -30,6 +37,80 @@ QR 재매개화 최대 오차는 7.16e-7, 직교성 최대 오차는 2.99e-7 이
   로드를 거부한다. `calibrated`는 별도의 TRAIN 통계 산출 과정을 거친다.
 
 ## 첫 실행
+
+### Adapter 없는 4층 모델
+
+| 항목 | 기존 `legacy` | 신규 `plain4` |
+| --- | --- | --- |
+| Adapter | analysis/synthesis 각각 1개 | 없음 (`Identity`, 파라미터 0개) |
+| N / M | 192 / 320 | 256 / 512 |
+| g_a / g_s conv 층 수 | 각각 2층 | 각각 4층 |
+| 기본 token downsampling | 4× | 4× |
+| 전체 코덱 파라미터 (geometry projection 포함) | 4,491,808 | 9,361,120 (약 2.08배) |
+| y / z (4096-token 입력) | 320×1024 / 192×256 | 512×1024 / 256×256 |
+
+모든 transform kernel은 `(1,5)`다. stride-1 Conv를 추가해 토큰 길이를 더 줄이지 않고
+표현력을 늘린다. `g_a`에는 GDN 3개, `g_s`에는 IGDN 3개가 있다.
+
+```text
+g_a: Conv(736→256,s2) → GDN → Conv(256→256,s1) → GDN
+     → Conv(256→256,s2) → GDN → Conv(256→512,s1)
+g_s: Conv(512→256,s1) → IGDN → Deconv(256→256,s2) → IGDN
+     → Conv(256→256,s1) → IGDN → Deconv(256→736,s2)
+```
+
+`h_a/h_s`의 층 수와 signed-y 입력은 유지하되 N/M에 따라 채널도 커진다.
+Morton OFF, input normalization 없음, geometry projection, frozen generator,
+기존 rate-distortion loss와 학습 데이터는 유지한다. Adapter 제거와 용량 증가는 함께 바뀌므로
+품질 차이를 Adapter 단독 효과로 해석할 수는 없다.
+
+원본 pretrained GlobalSplat에서 새 코덱을 초기화해야 한다. 기존 Hyper1D checkpoint에
+`--architecture plain4`를 주어 resume하면 구조가 맞지 않으므로 launcher가 거부한다.
+기존 checkpoint의 평가/resume은 기존 스크립트로 계속 가능하다.
+
+```bash
+cd /ceph_data/clue9986/CleanToken/upstream/globalsplat
+mkdir -p logs/slurm
+sbatch scripts/slurm/train_hyper1d_plain4_12h.slurm
+```
+
+새 wrapper는 `ariel-v9`, GPU 1개, 최대 50,000 step,
+checkpoint 500 step 간격, validation 2,000 step 간격을 사용한다.
+`--no-time-limit`으로 기존 11시간 학습 타이머를 끄고, warmup은 기존 1,000 step을 유지한다.
+Slurm job 제한은 72시간이다. 파일 이름의 `12h`는 이전 이름이며 현재 설정은 50K 학습이다.
+큰 모델의 step 시간과 GPU VRAM은 아직 측정하지 않았다.
+출력은 `outputs/hyper1d_plain4/job_<jobid>/` 아래에 저장한다.
+checkpoint 경로는 `checkpoints/hyper1d_12h/version_0/{stepXXXXXXXXX.ckpt,last.ckpt}`다.
+`experiment_name=hyper1d_12h`는 동일하지만 run 출력 폴더가 분리된다.
+
+원본 checkpoint가 기존 tokencomp 폴더에만 있으면:
+
+```bash
+sbatch scripts/slurm/train_hyper1d_plain4_12h.slurm \
+  --vanilla-checkpoint /ceph_data/clue9986/tokencomp/upstream/globalsplat/checkpoints/pretrained/globalsplat-re10k-32k.ckpt
+```
+
+CPU 검증은 두 구조의 실제 entropy roundtrip, 가변 길이, AMP 송신 일치, gradient,
+strict checkpoint/기존 metadata 복원, QR 모델 경계, launcher와 Slurm wrapper를 포함해
+67개 테스트가 통과했고 기존 main checkpoint 관련 테스트 2개도 통과했다.
+실제 원본 GlobalSplat checkpoint에서도 `plain4` 초기화와 strict codec reload를 확인했다.
+QR 재매개화 최대 오차는 7.16e-7 이하였다. 로컬 초기화 artifact는
+`outputs/hyper1d_plain4/implementation_smoke_20260929_162740/hyper1d_initial.ckpt`에 저장했다.
+실제 크기의 `plain4`에 합성 4096-token 입력을 넣은
+FP32 forward/실제 복호 최대 오차는 1.96e-8 이하였다. GPU 학습 품질 검증은 아직 수행하지 않았다.
+
+동일한 원본에서 이전 구조를 새로 학습하려면 `train_hyper1d_12h.slurm --architecture legacy`를 사용한다.
+
+서버에는 아래 7개 파일을 같은 상대 경로로 반영한다. 로컬에서 생성한 초기화 checkpoint는
+필수 업로드 파일이 아니며, Slurm job에서 서버의 원본 checkpoint로 새로 생성한다.
+
+- `globalsplat/compression/hyper1d.py`
+- `globalsplat/compression/hyper1d_config.py`
+- `globalsplat/compression/checkpoint.py`
+- `config/model/globalsplat_hyper1d.yaml`
+- `scripts/run_hyper1d.py`
+- `scripts/initialize_hyper1d_from_vanilla.py`
+- `scripts/slurm/train_hyper1d_plain4_12h.slurm`
 
 ### 자동 업로드에서 제외된 파일 준비
 
@@ -181,19 +262,22 @@ TensorBoard `train_codec_*`에는 rate 및 raw/adapter/y 규모, σ>256 비율,
 
 ## 재시작·평가·용량 변경
 
-16,000 step에서 같은 구조로 이어서 학습할 때는 재개용 SLURM wrapper를 사용한다.
-기본값은 **누적 32,000 step / 재개 후 최대 11시간 / 500 step마다 저장**이며,
+기존 Adapter 포함 `legacy` 구조를 이어서 학습할 때는 재개용 SLURM wrapper를 사용한다.
+job 436008 로그는 32,000 step까지 완료한 것으로 확인됐다. 32,000-step checkpoint에서
+재개하면 18,000 step을 더 진행한다. 기본값은 **누적 50,000 step /
+학습 타이머 없음 / 500 step마다 저장**이며,
 검증은 기존과 같은 2,000 update 간격이다. `save_top_k=-1`이므로 주기별 파일을 모두 남기고,
 정상 종료 시 optimizer/scheduler를 포함한 `last.ckpt`도 저장한다.
 
-아래 경로는 job 434951의 로그에서 확인한 run 디렉터리다. 이 문서에서는 서버의
-`last.ckpt` 파일 실존 여부를 직접 확인하지 않았으며, 제출 전 `ls`로 확인한다.
-434938을 이어갈 경우 `RUN=outputs/hyper1d/pilot_B`로 바꾼다.
+아래 경로는 job 434951과 resume job 436008의 로그에서 확인한 run 디렉터리다.
+`last.ckpt`는 다음 학습에서 갱신되므로 고정된 출발점인 `step000032000.ckpt`를 사용한다.
+서버의 해당 파일 실존 여부는 직접 확인하지 못했으므로 제출 전 `ls`로 확인한다.
+434938을 이어갈 경우 해당 run의 실제 누적 step checkpoint를 선택한다.
 
 ```bash
 cd /ceph_data/clue9986/CleanToken/upstream/globalsplat
 RUN=outputs/hyper1d/20260928_161549_981799
-CKPT="$RUN/checkpoints/hyper1d_12h/version_0/last.ckpt"
+CKPT="$RUN/checkpoints/hyper1d_12h/version_0/step000032000.ckpt"
 ls -lh "$CKPT"
 mkdir -p logs/slurm
 sbatch scripts/slurm/resume_hyper1d_12h.slurm "$CKPT" --output "$RUN"
@@ -201,8 +285,9 @@ sbatch scripts/slurm/resume_hyper1d_12h.slurm "$CKPT" --output "$RUN"
 
 새 스크립트와 기존 `train_hyper1d_12h.slurm`, `run_hyper1d.py`가 서버에 있어야 한다.
 재개 job은 `ariel-v9`, GPU 1개이며 SLURM 제한은 기존과 같은 24시간이다.
-다음 재개에서 총 48,000 step까지 늘리려면 `--max-steps 48000`을 추가한다.
-저장 간격은 `--checkpoint-every`, 학습 시간은 `--train-hours`로 덮어쓸 수 있다.
+저장 간격은 `--checkpoint-every`로 덮어쓸 수 있다.
+이 wrapper는 `--no-time-limit`을 기본 전달하므로 `--train-hours`만 추가해도
+학습 타이머는 켜지지 않는다. 실제 종료 제한은 누적 step 또는 Slurm의 24시간이다.
 500 step은 이전 run의 속도 기준 약 18분이며, 저장 시간이나 노드 상태에 따라 달라진다.
 로그는 `logs/slurm/slurm-gs-hyper1d-resume-<jobid>.out/.err`에 저장된다.
 누적 step 이름의 checkpoint는 원래 `version_0/` 디렉터리에 이어서 저장되며
@@ -212,18 +297,18 @@ sbatch scripts/slurm/resume_hyper1d_12h.slurm "$CKPT" --output "$RUN"
 
 ```bash
 python scripts/run_hyper1d.py train \
-  --checkpoint outputs/hyper1d/pilot_B/checkpoints/hyper1d_12h/version_0/last.ckpt \
-  --resume --max-steps 32000 --output outputs/hyper1d/pilot_B \
-  --checkpoint-every 500 --validate-every 2000 --train-hours 11 \
+  --checkpoint "$CKPT" \
+  --resume --max-steps 50000 --output "$RUN" \
+  --checkpoint-every 500 --validate-every 2000 --no-time-limit \
   --dataset-root /data3/local_datasets/re10k
 
 python scripts/run_hyper1d.py eval \
-  --checkpoint outputs/hyper1d/pilot_B/checkpoints/hyper1d_12h/version_0/last.ckpt \
+  --checkpoint "$RUN/checkpoints/hyper1d_12h/version_0/step000050000.ckpt" \
   --dataset-root /data3/local_datasets/re10k --max-scenes 128
 ```
 
 `--max-steps`는 재시작 이후 추가 step 수가 아니라 **누적 step 상한**이다. 재시작은
-optimizer/scheduler/global step을 복원하고 job마다 새 11시간 예산을 준다.
+optimizer/scheduler/global step을 복원하고 학습 타이머 없이 step 상한까지 진행한다.
 데이터 loader의 exact mid-epoch 복원은 기본적으로 끄므로 새 shuffle stream으로 이어간다.
 `--checkpoint`는 저장된 stride/norm/Morton/channel 설정을 자동으로 복원한다.
 

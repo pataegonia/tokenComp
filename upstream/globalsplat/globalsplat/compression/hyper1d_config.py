@@ -17,6 +17,8 @@ class Hyper1DConfig:
     use_morton: bool = False
     morton_bits: int = 10
     input_norm: str = "none"
+    architecture: str = "legacy"
+    paths: int = 1
 
     def __post_init__(self) -> None:
         if self.codec_type != "hyper1d":
@@ -38,6 +40,10 @@ class Hyper1DConfig:
             raise ValueError("invalid Morton configuration")
         if self.input_norm not in ("none", "calibrated"):
             raise ValueError("input_norm must be none or calibrated")
+        if self.architecture not in ("legacy", "plain4"):
+            raise ValueError("architecture must be legacy or plain4")
+        if type(self.paths) is not int or self.paths not in (1, 2):
+            raise ValueError("paths must be 1 (single MSH) or 2 (base MSH + residual MSH)")
 
     @property
     def observable_channels(self) -> int:
@@ -53,6 +59,15 @@ class Hyper1DConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def for_architecture(cls, architecture: str, **values: Any) -> "Hyper1DConfig":
+        """Initialization presets; omitted checkpoint metadata stays legacy."""
+        widths = {"legacy": (192, 320), "plain4": (256, 512)}
+        if architecture not in widths:
+            raise ValueError("architecture must be legacy or plain4")
+        n, m = widths[architecture]
+        return cls(**dict({"architecture": architecture, "n": n, "m": m}, **values))
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "Hyper1DConfig":

@@ -221,7 +221,64 @@ class Hyper1DSceneBitstream:
         return {"y": y, "z": z, "container": self.HEADER.size + len(self.payload) - y - z}
 
 
+@dataclass(frozen=True, slots=True)
+class DualHyper1DSceneBitstream:
+    """One scene with independently coded base and residual MSH y/z streams."""
+
+    points: int
+    channels: int
+    base_payload: bytes
+    residual_payload: bytes
+    flags: int = 0
+    version: int = 1
+
+    MAGIC: ClassVar[bytes] = b"E2EH0402"
+    HEADER: ClassVar[struct.Struct] = struct.Struct(">8sHHIIQQ32s")
+
+    def _validate(self) -> None:
+        for payload in (self.base_payload, self.residual_payload):
+            Hyper1DSceneBitstream(self.points, self.channels, payload,
+                                 self.flags, self.version)._validate()
+
+    def pack(self) -> bytes:
+        self._validate()
+        header = self.HEADER.pack(self.MAGIC, self.version, self.flags, self.points,
+            self.channels, len(self.base_payload), len(self.residual_payload), bytes(32))
+        payload = self.base_payload + self.residual_payload
+        digest = hashlib.sha256(header + payload).digest()
+        return header[:-32] + digest + payload
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "DualHyper1DSceneBitstream":
+        if len(data) < cls.HEADER.size:
+            raise ValueError("truncated dual Hyper1D header")
+        magic, version, flags, points, channels, base_length, residual_length, digest = cls.HEADER.unpack_from(data)
+        if magic != cls.MAGIC:
+            raise ValueError(f"invalid dual Hyper1D magic {magic!r}")
+        if len(data) != cls.HEADER.size + base_length + residual_length:
+            raise ValueError("dual Hyper1D payload length mismatch")
+        zeroed = data[:cls.HEADER.size - 32] + bytes(32) + data[cls.HEADER.size:]
+        if hashlib.sha256(zeroed).digest() != digest:
+            raise ValueError("dual Hyper1D SHA-256 authentication failed")
+        split = cls.HEADER.size + base_length
+        result = cls(points, channels, data[cls.HEADER.size:split], data[split:], flags, version)
+        result._validate()
+        return result
+
+    @property
+    def bytes_by_stream(self) -> dict[str, int]:
+        sizes = {}
+        for name, payload in (("base", self.base_payload), ("residual", self.residual_payload)):
+            packed = ResidualBitstream.unpack(payload)
+            sizes[f"{name}_y"] = sum(map(len, packed.y_strings))
+            sizes[f"{name}_z"] = sum(map(len, packed.z_strings))
+        sizes["container"] = self.HEADER.size + len(self.base_payload) + len(self.residual_payload) - sum(sizes.values())
+        return sizes
+
+
 def scene_bytes_by_stream(data: bytes) -> dict[str, int]:
+    if data.startswith(DualHyper1DSceneBitstream.MAGIC):
+        return DualHyper1DSceneBitstream.unpack(data).bytes_by_stream
     if data.startswith(Hyper1DSceneBitstream.MAGIC):
         return Hyper1DSceneBitstream.unpack(data).bytes_by_stream
     if data.startswith(SceneBitstream.MAGIC):

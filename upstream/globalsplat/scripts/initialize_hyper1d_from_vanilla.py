@@ -8,7 +8,7 @@ import torch
 import pytorch_lightning as pl
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
-from globalsplat.compression import initialize_observable_from_vanilla
+from globalsplat.compression import Hyper1DConfig, initialize_observable_from_vanilla
 from globalsplat.model.globalsplat import GlobalSplat
 
 
@@ -26,6 +26,8 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--strides", choices=("4x", "2x"), default="4x")
     parser.add_argument("--morton", action="store_true")
+    parser.add_argument("--architecture", choices=("plain4", "legacy"), default="plain4")
+    parser.add_argument("--paths", type=int, choices=(1, 2), default=1)
     parser.add_argument("--seed", type=int, default=111123)
     args = parser.parse_args(argv)
     if args.output.exists():
@@ -36,8 +38,9 @@ def main(argv=None):
         cfg = compose(config_name="main", overrides=["+experiment=re10k_hyper1d_12h"])
     values = OmegaConf.to_container(cfg.model, resolve=True)
     values.pop("name")
-    values["feature_codec"]["strides"] = (2, 2) if args.strides == "4x" else (2, 1)
-    values["feature_codec"]["use_morton"] = args.morton
+    values["feature_codec"] = Hyper1DConfig.for_architecture(
+        args.architecture, strides=(2, 2) if args.strides == "4x" else (2, 1),
+        use_morton=args.morton, paths=args.paths).to_dict()
     model = GlobalSplat(**values)
     source = torch.load(args.vanilla, map_location="cpu", weights_only=False)
     source_state = source.get("state_dict", source)
@@ -66,7 +69,8 @@ def main(argv=None):
     torch.save({"state_dict": {f"model.{key}": value.cpu() for key, value in model.state_dict().items()},
                 "feature_codec_config": model.feature_codec.config.to_dict(),
                 "pytorch-lightning_version": pl.__version__, "hyper1d_provenance": provenance}, args.output)
-    print(f"wrote {args.output}\n{report.to_dict()}")
+    parameters = sum(p.numel() for p in model.feature_codec.parameters())
+    print(f"wrote {args.output}\narchitecture={args.architecture}, paths={args.paths}, codec_parameters={parameters:,}\n{report.to_dict()}")
 
 
 if __name__ == "__main__":

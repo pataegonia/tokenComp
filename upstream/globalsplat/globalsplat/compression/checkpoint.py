@@ -206,7 +206,11 @@ def infer_feature_codec_config(state, metadata=None):
         return infer_config(state, metadata)
     if kind != "hyper1d":
         raise ValueError(f"unsupported checkpoint codec_type {kind!r}")
-    missing_metadata = set(Hyper1DConfig.__dataclass_fields__) - set(metadata)
+    # Pilots saved before architecture selection have the original adapters and
+    # two-layer transforms. Fixed tensor names/shapes below verify that fallback.
+    # Older checkpoints are single-path; a dual-path state cannot pass the
+    # strict key validation below with this fallback.
+    missing_metadata = set(Hyper1DConfig.__dataclass_fields__) - {"architecture", "paths"} - set(metadata)
     if missing_metadata:
         raise ValueError(f"incomplete Hyper1D checkpoint metadata: {sorted(missing_metadata)}")
     config = Hyper1DConfig.from_mapping(metadata)
