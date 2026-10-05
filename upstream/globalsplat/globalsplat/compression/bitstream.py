@@ -223,7 +223,7 @@ class Hyper1DSceneBitstream:
 
 @dataclass(frozen=True, slots=True)
 class DualHyper1DSceneBitstream:
-    """One scene with independently coded base and residual MSH y/z streams."""
+    """One scene with two MSH streams; flag bit 1 marks a low-rank base."""
 
     points: int
     channels: int
@@ -236,9 +236,11 @@ class DualHyper1DSceneBitstream:
     HEADER: ClassVar[struct.Struct] = struct.Struct(">8sHHIIQQ32s")
 
     def _validate(self) -> None:
+        if self.version != 1 or self.flags & ~3:
+            raise ValueError("unsupported dual Hyper1D version or flags")
         for payload in (self.base_payload, self.residual_payload):
             Hyper1DSceneBitstream(self.points, self.channels, payload,
-                                 self.flags, self.version)._validate()
+                                 self.flags & 1, self.version)._validate()
 
     def pack(self) -> bytes:
         self._validate()

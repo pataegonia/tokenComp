@@ -39,10 +39,15 @@ def parse_args(argv=None):
     parser.add_argument("--save-images", action="store_true", help="eval: save rendered target images and ground truth")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--precision", default="bf16-mixed")
+    parser.add_argument("--devices", type=int, default=1, help="training GPUs on one node")
+    parser.add_argument("--launcher", choices=("python", "srun"), default="python",
+                        help="srun launches one Lightning DDP process per GPU after one-time initialization")
     parser.add_argument("--architecture", choices=("plain4", "legacy"),
                         help="vanilla initialization only; default: plain4 (no adapters, N=256/M=512, four-layer transforms)")
     parser.add_argument("--paths", type=int, choices=(1, 2),
                         help="initialization only; 1: single MSH (default), 2: base MSH + residual MSH")
+    parser.add_argument("--base-rank", type=int,
+                        help="initialization only; project the base MSH input to this rank (requires --paths 2)")
     parser.add_argument("--strides", choices=("4x", "2x"), default="4x", help="initialization only; checkpoint architecture is restored automatically")
     parser.add_argument("--morton", action="store_true", help="initialization only")
     parser.add_argument("--dry-run", action="store_true")
@@ -51,12 +56,18 @@ def parse_args(argv=None):
         parser.error("eval requires --checkpoint without --resume")
     if args.mode == "eval" and args.no_time_limit:
         parser.error("--no-time-limit is train-only")
+    if args.mode == "eval" and (args.devices != 1 or args.launcher != "python"):
+        parser.error("actual-bitstream eval requires one GPU and the python launcher")
     if args.resume and not args.checkpoint:
         parser.error("--resume requires a full training --checkpoint")
     if args.checkpoint and args.architecture is not None:
         parser.error("--architecture requires --vanilla-checkpoint; checkpoint architecture is restored automatically")
     if args.checkpoint and args.paths is not None:
         parser.error("--paths requires --vanilla-checkpoint; checkpoint path count is restored automatically")
+    if args.checkpoint and args.base_rank is not None:
+        parser.error("--base-rank requires --vanilla-checkpoint; checkpoint rank is restored automatically")
+    if args.base_rank is not None and (args.base_rank < 1 or args.paths != 2):
+        parser.error("--base-rank must be positive and requires --paths 2")
     if args.mode != "eval" and (args.sample_test or args.exclude_validation or args.save_images):
         parser.error("sample-test, exclude-validation and save-images are eval-only options")
     if args.exclude_validation and not args.sample_test:
@@ -65,7 +76,7 @@ def parse_args(argv=None):
         parser.error("--all-test is eval-only")
     if args.all_test and (args.sample_test or args.exclude_validation):
         parser.error("--all-test cannot be combined with test sampling")
-    for name in ("max_steps", "warmup_steps", "batch_size", "accumulate", "validate_every", "checkpoint_every", "max_scenes"):
+    for name in ("max_steps", "warmup_steps", "batch_size", "accumulate", "validate_every", "checkpoint_every", "max_scenes", "devices"):
         if getattr(args, name) <= 0:
             parser.error(f"{name} must be positive")
     if args.workers < 0 or not math.isfinite(args.train_hours) or args.train_hours <= 0 or not math.isfinite(args.rate_lambda) or args.rate_lambda <= 0:
@@ -90,15 +101,20 @@ def build_command(args, output, checkpoint, codec_config=None):
     config = codec_config or Hyper1DConfig.for_architecture(
         args.architecture or "plain4",
         strides=(2, 2) if args.strides == "4x" else (2, 1), use_morton=args.morton,
-        paths=args.paths or 1)
+        paths=args.paths or 1, base_rank=args.base_rank or 0)
+    hydra_dir = (output / 'hydra').as_posix()
+    if args.devices > 1:
+        hydra_dir += '/rank_${oc.env:SLURM_PROCID,0}'
     cmd = [sys.executable, "-m", "globalsplat.main", "+experiment=re10k_hyper1d_12h",
            f"checkpointing.load={checkpoint.resolve().as_posix()}", "checkpointing.auto_resume=false",
            f"checkpointing.resume={str(args.resume).lower()}", f"loss.rate_lambda={args.rate_lambda}",
            f"dataset.dataset_roots=[{args.dataset_root.resolve().as_posix()}]",
            f"dataset.mvsplat_root={(REPO / 'third_party/ZPressor/mvsplat').as_posix()}",
            f"trainer.precision={args.precision}", f"optimizer.num_workers={args.workers}",
+           f"trainer.devices={args.devices}", "trainer.num_nodes=1",
+           f"trainer.strategy={'ddp_find_unused_parameters_true' if args.devices > 1 else 'auto'}",
            f"output_dir={(output / 'checkpoints').as_posix()}", f"log_dir={(output / 'logs').as_posix()}",
-           f"hydra.run.dir={(output / 'hydra').as_posix()}",
+           f"hydra.run.dir={hydra_dir}",
            f"validation.output_path={(output / 'validation').as_posix()}"]
     for name, value in config.to_dict().items():
         if name in ("texture_channels", "geometry_channels"):
@@ -127,8 +143,21 @@ def build_command(args, output, checkpoint, codec_config=None):
     return cmd
 
 
+def launch_command(args, command):
+    if args.launcher != "srun":
+        return command
+    return ["srun", "--nodes=1", f"--ntasks={args.devices}",
+            f"--ntasks-per-node={args.devices}", "--kill-on-bad-exit=1",
+            "--gpu-bind=none", *command]
+
+
 def main(argv=None):
     args = parse_args(argv)
+    if args.launcher == "srun" and not args.dry_run:
+        if (not os.environ.get("SLURM_JOB_ID")
+                or int(os.environ.get("SLURM_NTASKS", "0")) != args.devices
+                or int(os.environ.get("SLURM_JOB_NUM_NODES", "0")) != 1):
+            raise RuntimeError("srun requires one Slurm node and one allocated task per requested GPU")
     output = (args.output or REPO / "outputs/hyper1d" / datetime.now().strftime("%Y%m%d_%H%M%S_%f")).resolve()
     checkpoint = args.checkpoint or output / "hyper1d_initial.ckpt"
     env = os.environ.copy()
@@ -138,7 +167,8 @@ def main(argv=None):
         initialize = [sys.executable, str(REPO / "scripts/initialize_hyper1d_from_vanilla.py"),
                       "--vanilla", str(args.vanilla_checkpoint.resolve()), "--output", str(checkpoint),
                       "--strides", args.strides, "--architecture", args.architecture or "plain4",
-                      "--paths", str(args.paths or 1)] + (["--morton"] if args.morton else [])
+                      "--paths", str(args.paths or 1), "--base-rank", str(args.base_rank or 0)] \
+                     + (["--morton"] if args.morton else [])
     if args.dry_run:
         config = None
         if args.checkpoint and args.checkpoint.is_file():
@@ -149,7 +179,8 @@ def main(argv=None):
             config = loaded.config
         if initialize:
             print(shlex.join(initialize))
-        print(shlex.join(build_command(args, output, checkpoint, config)))
+        command = launch_command(args, build_command(args, output, checkpoint, config))
+        print(shlex.join(command))
         return
     for split in (("train", "test") if args.mode == "train" else ("test",)):
         if not (args.dataset_root / split / "index.json").is_file():
@@ -182,7 +213,7 @@ def main(argv=None):
         if int(state.get("global_step", 0)) >= args.max_steps:
             raise ValueError("max-steps must exceed the checkpoint global_step")
         del state
-    command = build_command(args, output, checkpoint, config)
+    command = launch_command(args, build_command(args, output, checkpoint, config))
     print(shlex.join(command), flush=True)
     subprocess.run(command, cwd=REPO, env=env, check=True)
 

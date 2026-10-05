@@ -33,14 +33,14 @@ def cpu_threads():
     torch.set_num_threads(previous)
 
 
-def small_model(codec=True, architecture="legacy", paths=1, use_morton=False):
+def small_model(codec=True, architecture="legacy", paths=1, use_morton=False, base_rank=0):
     return GlobalSplat(static_only=True, sh_degree=0, patch_size=4,
         latent_rep_token_amount=33, dim_latents=32, dim_rays=16, dim_rgb_feat=16,
         rounds=1, slot_calib_layers_per_round=1, num_heads=4, M_max=2,
         freeze_globalsplat=codec,
         feature_codec=dict(codec_type="hyper1d", geometry_observable_channels=28,
             n=3, m=6, adapter_hidden=3, architecture=architecture,
-            paths=paths, use_morton=use_morton) if codec else None)
+            paths=paths, use_morton=use_morton, base_rank=base_rank) if codec else None)
 
 
 def sample_batch():
@@ -53,10 +53,11 @@ def sample_batch():
             "scene_info": {"scene": ["fixed_scene"]}}
 
 
-@pytest.mark.parametrize("architecture", ["legacy", "plain4"])
-def test_qr_boundary_freezing_and_full_model_gradients(monkeypatch, architecture):
+@pytest.mark.parametrize("architecture,paths,base_rank", [
+    ("legacy", 1, 0), ("plain4", 1, 0), ("legacy", 2, 8)])
+def test_qr_boundary_freezing_and_full_model_gradients(monkeypatch, architecture, paths, base_rank):
     source = small_model(False).eval()
-    model = small_model(True, architecture).train()
+    model = small_model(True, architecture, paths=paths, base_rank=base_rank).train()
     report = initialize_observable_from_vanilla(model, {"state_dict": source.state_dict()})
     assert report.max_reparameterization_error < 1e-6
     t, g = torch.randn(1, 33, 32), torch.randn(1, 33, 32)
@@ -78,10 +79,11 @@ def test_qr_boundary_freezing_and_full_model_gradients(monkeypatch, architecture
     assert result.num_gaussians == 33
 
 
-@pytest.mark.parametrize("architecture", ["legacy", "plain4"])
-@pytest.mark.parametrize("paths", [1, 2])
-def test_checkpoint_save_load_no_score_attributes(architecture, paths):
-    model = small_model(architecture=architecture, paths=paths)
+@pytest.mark.parametrize("architecture,paths,base_rank", [
+    ("legacy", 1, 0), ("plain4", 1, 0), ("legacy", 2, 0),
+    ("plain4", 2, 0), ("legacy", 2, 8)])
+def test_checkpoint_save_load_no_score_attributes(architecture, paths, base_rank):
+    model = small_model(architecture=architecture, paths=paths, base_rank=base_rank)
     model.feature_codec.update()
     module = GlobalSplatModule(model, eval_mode=True)
     module.hyper1d_provenance = {"source": "test"}
@@ -89,7 +91,8 @@ def test_checkpoint_save_load_no_score_attributes(architecture, paths):
     module.on_save_checkpoint(checkpoint)
     assert checkpoint["feature_codec_config"]["codec_type"] == "hyper1d"
     assert "score_mean_offset_enabled" not in checkpoint
-    fresh = GlobalSplatModule(small_model(architecture=architecture, paths=paths), eval_mode=True)
+    fresh = GlobalSplatModule(small_model(architecture=architecture, paths=paths,
+                                         base_rank=base_rank), eval_mode=True)
     fresh.on_load_checkpoint(checkpoint)
     fresh.load_state_dict(checkpoint["state_dict"], strict=True)
     assert fresh.hyper1d_provenance == module.hyper1d_provenance

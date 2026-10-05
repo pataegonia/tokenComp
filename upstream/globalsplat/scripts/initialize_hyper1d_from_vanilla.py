@@ -28,6 +28,8 @@ def main(argv=None):
     parser.add_argument("--morton", action="store_true")
     parser.add_argument("--architecture", choices=("plain4", "legacy"), default="plain4")
     parser.add_argument("--paths", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--base-rank", type=int, default=0,
+                        help="project the base MSH input to this rank; requires --paths 2")
     parser.add_argument("--seed", type=int, default=111123)
     args = parser.parse_args(argv)
     if args.output.exists():
@@ -40,7 +42,7 @@ def main(argv=None):
     values.pop("name")
     values["feature_codec"] = Hyper1DConfig.for_architecture(
         args.architecture, strides=(2, 2) if args.strides == "4x" else (2, 1),
-        use_morton=args.morton, paths=args.paths).to_dict()
+        use_morton=args.morton, paths=args.paths, base_rank=args.base_rank).to_dict()
     model = GlobalSplat(**values)
     source = torch.load(args.vanilla, map_location="cpu", weights_only=False)
     source_state = source.get("state_dict", source)
@@ -70,7 +72,8 @@ def main(argv=None):
                 "feature_codec_config": model.feature_codec.config.to_dict(),
                 "pytorch-lightning_version": pl.__version__, "hyper1d_provenance": provenance}, args.output)
     parameters = sum(p.numel() for p in model.feature_codec.parameters())
-    print(f"wrote {args.output}\narchitecture={args.architecture}, paths={args.paths}, codec_parameters={parameters:,}\n{report.to_dict()}")
+    print(f"wrote {args.output}\narchitecture={args.architecture}, paths={args.paths}, "
+          f"base_rank={args.base_rank}, codec_parameters={parameters:,}\n{report.to_dict()}")
 
 
 if __name__ == "__main__":

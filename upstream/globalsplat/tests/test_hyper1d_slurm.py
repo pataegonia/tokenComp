@@ -16,6 +16,7 @@ EVAL_SCRIPT = ROOT / "scripts/slurm/eval_hyper1d.slurm"
 PLAIN4_SCRIPT = ROOT / "scripts/slurm/train_hyper1d_plain4_12h.slurm"
 HIGH_QUALITY_SCRIPT = ROOT / "scripts/slurm/train_hyper1d_high_quality_50k.slurm"
 MSH_COMPARE_SCRIPT = ROOT / "scripts/slurm/train_hyper1d_msh_compare_50k.slurm"
+LOWRANK_SCRIPT = ROOT / "scripts/slurm/train_hyper1d_lowrank_base_50k.slurm"
 if sys.platform == "win32":
     candidate = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git/bin/bash.exe"
     BASH = str(candidate) if candidate.is_file() else None
@@ -47,6 +48,11 @@ def run_wrapper(tmp_path, arguments=(), *, checkpoint_exists=True, vanilla_overr
         '#!/usr/bin/env bash\n'
         'printf "%s\\n" "$@" > "$ARGUMENT_DUMP"\n', encoding="utf-8")
     mock_srun.chmod(0o755)
+    mock_python = mock_bin / "python"
+    mock_python.write_text(
+        '#!/usr/bin/env bash\n'
+        'printf "%s\\n" "$@" > "$ARGUMENT_DUMP"\n', encoding="utf-8")
+    mock_python.chmod(0o755)
     harness = tmp_path / "harness.sh"
     harness.write_text(
         'set -euo pipefail\n'
@@ -65,6 +71,8 @@ def run_wrapper(tmp_path, arguments=(), *, checkpoint_exists=True, vanilla_overr
     if array_id is not None:
         env["SLURM_ARRAY_JOB_ID"] = "987654"
         env["SLURM_ARRAY_TASK_ID"] = str(array_id)
+    if script == LOWRANK_SCRIPT:
+        env["SLURM_JOB_ID"] = "987654"
     result = subprocess.run([BASH, str(harness), *arguments], env=env,
                             capture_output=True, text=True)
     return result, dump.read_text().splitlines() if dump.exists() else [], checkpoint
@@ -232,6 +240,71 @@ def test_resume_submission_allows_later_step_limit(tmp_path):
     parsed = runner.parse_args(["train", *args[4:]])
     assert parsed.max_steps == 48000
     assert parsed.resume and parsed.checkpoint == checkpoint
+
+
+def test_lowrank_base_submission_and_hydra_config(tmp_path, capsys):
+    import importlib.util
+    from hydra import compose, initialize_config_dir
+    script = LOWRANK_SCRIPT.read_text(encoding="utf-8")
+    assert "#SBATCH -w ariel-v8" in script
+    assert "#SBATCH --gres=gpu:normal:4" in script
+    assert "#SBATCH --ntasks-per-node=4" in script
+    assert "#SBATCH --array" not in script
+    result, argv, checkpoint = run_wrapper(tmp_path, script=LOWRANK_SCRIPT)
+    assert result.returncode == 0, result.stderr
+    spec = importlib.util.spec_from_file_location("run_hyper1d", ROOT / "scripts/run_hyper1d.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    assert argv[:2] == ["scripts/run_hyper1d.py", "train"]
+    args = runner.parse_args(argv[1:])
+    assert args.vanilla_checkpoint == checkpoint
+    assert args.paths == 2 and args.base_rank == 56 and args.morton
+    assert args.devices == 4 and args.launcher == "srun"
+    assert args.batch_size * args.devices * args.accumulate == 8
+    assert args.max_steps == 50000 and args.no_time_limit
+    assert "/rank56/morton_on/lambda0p0256/job_987654" in args.output.as_posix()
+    command = runner.build_command(args, args.output, checkpoint)
+    assert any(item.endswith("/hydra/rank_${oc.env:SLURM_PROCID,0}") for item in command)
+    with initialize_config_dir(config_dir=str(ROOT / "config"), version_base=None):
+        cfg = compose(config_name="main", overrides=command[3:])
+    assert cfg.model.feature_codec.base_rank == 56
+    assert cfg.model.feature_codec.paths == 2
+    assert cfg.model.feature_codec.use_morton
+    assert cfg.model.feature_codec.n == 192 and cfg.model.feature_codec.m == 320
+    assert cfg.trainer.devices == 4
+    assert cfg.trainer.strategy == "ddp_find_unused_parameters_true"
+    assert cfg.trainer.accumulate_grad_batches == 1
+    assert cfg.trainer.val_check_interval == 2000
+    runner.main([*argv[1:], "--dry-run"])
+    output = capsys.readouterr().out
+    assert "srun --nodes=1 --ntasks=4 --ntasks-per-node=4" in output
+    assert "--architecture legacy --paths 2 --base-rank 56 --morton" in output
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--vanilla-checkpoint", "vanilla.ckpt", "--base-rank", "56"],
+    ["--vanilla-checkpoint", "vanilla.ckpt", "--paths", "1", "--base-rank", "56"],
+    ["--checkpoint", "saved.ckpt", "--base-rank", "56"],
+])
+def test_lowrank_runner_rejects_inconsistent_cli(arguments):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("run_hyper1d", ROOT / "scripts/run_hyper1d.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    with pytest.raises(SystemExit):
+        runner.parse_args(["train", *arguments])
+
+
+def test_multi_gpu_runner_checks_allocation_before_initialization(monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("run_hyper1d", ROOT / "scripts/run_hyper1d.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    for name in ("SLURM_JOB_ID", "SLURM_NTASKS", "SLURM_JOB_NUM_NODES"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(RuntimeError, match="one Slurm node"):
+        runner.main(["train", "--vanilla-checkpoint", "missing.ckpt", "--paths", "2",
+                     "--base-rank", "56", "--devices", "4", "--launcher", "srun"])
 
 
 @pytest.mark.parametrize("arguments", [[], ["missing.ckpt"]])

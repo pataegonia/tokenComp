@@ -19,6 +19,7 @@ class Hyper1DConfig:
     input_norm: str = "none"
     architecture: str = "legacy"
     paths: int = 1
+    base_rank: int = 0
 
     def __post_init__(self) -> None:
         if self.codec_type != "hyper1d":
@@ -44,6 +45,10 @@ class Hyper1DConfig:
             raise ValueError("architecture must be legacy or plain4")
         if type(self.paths) is not int or self.paths not in (1, 2):
             raise ValueError("paths must be 1 (single MSH) or 2 (base MSH + residual MSH)")
+        if type(self.base_rank) is not int or not 0 <= self.base_rank < self.observable_channels:
+            raise ValueError("base_rank must be zero or smaller than observable_channels")
+        if self.base_rank and self.paths != 2:
+            raise ValueError("base_rank requires paths=2")
 
     @property
     def observable_channels(self) -> int:

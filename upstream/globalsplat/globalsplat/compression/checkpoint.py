@@ -210,7 +210,7 @@ def infer_feature_codec_config(state, metadata=None):
     # two-layer transforms. Fixed tensor names/shapes below verify that fallback.
     # Older checkpoints are single-path; a dual-path state cannot pass the
     # strict key validation below with this fallback.
-    missing_metadata = set(Hyper1DConfig.__dataclass_fields__) - {"architecture", "paths"} - set(metadata)
+    missing_metadata = set(Hyper1DConfig.__dataclass_fields__) - {"architecture", "paths", "base_rank"} - set(metadata)
     if missing_metadata:
         raise ValueError(f"incomplete Hyper1D checkpoint metadata: {sorted(missing_metadata)}")
     config = Hyper1DConfig.from_mapping(metadata)

@@ -26,13 +26,14 @@ def _deconv(cin: int, cout: int, kernel: int, stride: int = 2):
 class MeanScaleHyperprior1D(nn.Module):
     """One independently parameterized MSH on [B,C,1,P] features."""
 
-    def __init__(self, config: Hyper1DConfig | None = None):
+    def __init__(self, config: Hyper1DConfig | None = None, *, input_channels: int | None = None):
         super().__init__()
         self.config = config or Hyper1DConfig()
+        self.input_channels = input_channels or self.config.observable_channels
         self._init_transforms()
 
     def _init_transforms(self):
-        c, n, m = self.config.observable_channels, self.config.n, self.config.m
+        c, n, m = self.input_channels, self.config.n, self.config.m
         s0, s1 = self.config.strides
         if self.config.architecture == "legacy":
             # Preserve module names and shapes for the existing trained pilots.
@@ -145,7 +146,7 @@ class MeanScaleHyperprior1D(nn.Module):
 
 
 class FeatureHyperprior1DCodec(MeanScaleHyperprior1D):
-    """Single MSH or a base MSH followed by an independent residual MSH."""
+    """Single MSH or an optional low-rank base MSH plus full-width residual MSH."""
 
     def __init__(self, config: Hyper1DConfig | None = None):
         # Keep the old one-path parameter names AND registration order so full
@@ -157,9 +158,30 @@ class FeatureHyperprior1DCodec(MeanScaleHyperprior1D):
         c = self.config.observable_channels
         self.register_buffer("f_mean", torch.zeros(1, c, 1, 1))
         self.register_buffer("f_std", torch.ones(1, c, 1, 1))
+        self.input_channels = self.config.base_rank or c
         self._init_transforms()
+        if self.config.base_rank:
+            self.base_analysis = nn.Linear(c, self.config.base_rank, bias=False)
+            self.base_synthesis = nn.Linear(self.config.base_rank, c, bias=False)
+            # Start with a tied orthogonal projector; both matrices then train freely.
+            nn.init.orthogonal_(self.base_analysis.weight)
+            with torch.no_grad():
+                self.base_synthesis.weight.copy_(self.base_analysis.weight.T)
         if self.config.paths == 2:
-            self.residual_msh = MeanScaleHyperprior1D(self.config)
+            self.residual_msh = MeanScaleHyperprior1D(self.config, input_channels=c)
+
+    def _base_input(self, features: Tensor) -> Tensor:
+        if self.config.base_rank:
+            return self.base_analysis(features.movedim(1, -1)).movedim(-1, 1)
+        return features
+
+    def _base_output(self, scores: Tensor) -> Tensor:
+        if self.config.base_rank:
+            return self.base_synthesis(scores.movedim(1, -1)).movedim(-1, 1)
+        return scores
+
+    def _stream_flags(self) -> int:
+        return int(self.config.use_morton) | (2 if self.config.base_rank else 0)
 
     def validate_normalization(self) -> None:
         if not torch.isfinite(self.f_mean).all() or not torch.isfinite(self.f_std).all() or (self.f_std <= 0).any():
@@ -210,7 +232,8 @@ class FeatureHyperprior1DCodec(MeanScaleHyperprior1D):
     def forward(self, texture, geometry, positions=None, *, restore_original_order=True, training=None):
         features, order = self._input(texture, geometry, positions)
         training = self.training if training is None else training
-        value, likelihoods = self.forward_features(features, training=training)
+        value, likelihoods = self.forward_features(self._base_input(features), training=training)
+        value = self._base_output(value)
         if self.config.paths == 2:
             self.residual_msh.capture_diagnostics = self.capture_diagnostics
             residual, residual_likelihoods = self.residual_msh.forward_features(features - value, training=training)
@@ -230,16 +253,18 @@ class FeatureHyperprior1DCodec(MeanScaleHyperprior1D):
         # Sender and receiver use the same FP32 transforms even under outer AMP.
         with torch.autocast(device_type=texture.device.type, enabled=False):
             features, order = self._input(texture.float(), geometry.float(), positions)
-            payload, base = self.compress_features(features.float(), reconstruct=self.config.paths == 2)
+            payload, base = self.compress_features(self._base_input(features.float()),
+                                                   reconstruct=self.config.paths == 2)
             if self.config.paths == 2:
+                base = self._base_output(base)
                 self.residual_msh.capture_diagnostics = self.capture_diagnostics
                 residual_payload, _ = self.residual_msh.compress_features(features - base)
                 self._residual_diagnostics()
                 scene = DualHyper1DSceneBitstream(texture.shape[1], self.config.observable_channels,
-                    payload, residual_payload, flags=int(self.config.use_morton))
+                    payload, residual_payload, flags=self._stream_flags())
             else:
                 scene = Hyper1DSceneBitstream(texture.shape[1], self.config.observable_channels,
-                    payload, flags=int(self.config.use_morton))
+                    payload, flags=self._stream_flags())
         data = scene.pack()
         return CompressedScene(data, order)
 
@@ -247,7 +272,7 @@ class FeatureHyperprior1DCodec(MeanScaleHyperprior1D):
     def decompress(self, data: bytes, *, inverse_permutation: Tensor | None = None):
         container = DualHyper1DSceneBitstream if self.config.paths == 2 else Hyper1DSceneBitstream
         scene = container.unpack(data)
-        if scene.channels != self.config.observable_channels or scene.flags != int(self.config.use_morton):
+        if scene.channels != self.config.observable_channels or scene.flags != self._stream_flags():
             raise ValueError("Hyper1D stream configuration mismatch")
         # Validate every payload before either entropy decoder is entered.
         payload = scene.base_payload if self.config.paths == 2 else scene.payload
@@ -255,7 +280,7 @@ class FeatureHyperprior1DCodec(MeanScaleHyperprior1D):
         if self.config.paths == 2:
             self.residual_msh.validate_payload(scene.residual_payload, scene.points)
         with torch.autocast(device_type=self.f_mean.device.type, enabled=False):
-            value = self.decompress_features(payload, scene.points)
+            value = self._base_output(self.decompress_features(payload, scene.points))
             if self.config.paths == 2:
                 value = value + self.residual_msh.decompress_features(scene.residual_payload, scene.points)
             value = self._restore_features(value)
