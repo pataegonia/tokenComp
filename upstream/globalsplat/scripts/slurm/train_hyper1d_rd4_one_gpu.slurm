@@ -7,6 +7,7 @@
 #SBATCH --mem-per-gpu=48G
 #SBATCH -p batch_ugrad
 #SBATCH --array=0-10%4
+#SBATCH -w ariel-v10
 #SBATCH -t 6-00:00:00
 #SBATCH -o logs/slurm/slurm-gs-h1d-rd4-1g-%A_%a.out
 #SBATCH -e logs/slurm/slurm-gs-h1d-rd4-1g-%A_%a.err

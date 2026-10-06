@@ -1,4 +1,4 @@
-d#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Shared experiment IDs for the four-point Hyper1D rate-distortion sweep.
 # Source this file after setting REPO_DIR.
 

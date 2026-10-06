@@ -1,4 +1,4 @@
-dd#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Submit missing 50k trainings, then full-test evaluations for four lambda points.
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
