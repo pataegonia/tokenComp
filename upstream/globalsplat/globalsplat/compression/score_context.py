@@ -13,8 +13,8 @@ class ContextualScoreEntropy(nn.Module):
     """Condition score coding on decoded scene, channel, and Morton context.
 
     Channel groups are decoded serially, but every token within a group is
-    processed in parallel. Spatial context uses a two-pass
-    even/odd split, avoiding a 4096-step autoregressive decoder.
+    processed in parallel. Spatial context uses two, three or four passes over
+    Morton-sorted tokens, avoiding a token-by-token autoregressive decoder.
     """
 
     FLAG_MEAN = 1 << 0
@@ -22,14 +22,20 @@ class ContextualScoreEntropy(nn.Module):
     FLAG_SPATIAL = 1 << 2
     FLAG_SPATIAL_ENTROPY_SPLIT = 1 << 5
     FLAG_NO_MEAN_OFFSET = 1 << 6
+    FLAG_THREE_STAGES = 1 << 7
+    FLAG_FOUR_STAGES = 1 << 8
+    FLAG_KERNEL5 = 1 << 9
     KNOWN_FLAGS = (
         FLAG_MEAN | FLAG_CHANNEL | FLAG_SPATIAL
         | FLAG_SPATIAL_ENTROPY_SPLIT | FLAG_NO_MEAN_OFFSET
+        | FLAG_THREE_STAGES | FLAG_FOUR_STAGES | FLAG_KERNEL5
     )
 
     def __init__(
         self, *, rank: int, scene_channels: int, slice_channels: int, hidden: int,
         mean_condition: bool = True, channel_context: bool = True,
+        spatial_stages: int = 2, spatial_kernel: int = 3,
+        context_quantization: str = "noise",
     ) -> None:
         super().__init__()
         self.rank = int(rank)
@@ -37,6 +43,15 @@ class ContextualScoreEntropy(nn.Module):
         self.slice_channels = int(slice_channels)
         self.mean_condition = mean_condition
         self.channel_context = channel_context
+        self.spatial_stages = spatial_stages
+        self.spatial_kernel = spatial_kernel
+        self.context_quantization = context_quantization
+        if spatial_stages not in (2, 3, 4) or spatial_kernel not in (3, 5):
+            raise ValueError("unsupported spatial stage count or kernel")
+        if context_quantization not in ("noise", "ste"):
+            raise ValueError("context_quantization must be noise or ste")
+        if spatial_stages > 2 and (channel_context or spatial_kernel != 5):
+            raise ValueError("3/4 spatial stages require no channel context and kernel 5")
         self.group_sizes = tuple(
             (
                 min(self.slice_channels, self.rank - start)
@@ -65,16 +80,36 @@ class ContextualScoreEntropy(nn.Module):
         self.spatial_predictors = nn.ModuleList()
         self.spatial_odd_entropies = nn.ModuleList()
         for width in self.group_sizes:
-            predictor = nn.Conv2d(width, width, kernel_size=(1, 3), padding=(0, 1))
+            predictor = nn.Conv2d(width, width, kernel_size=(1, spatial_kernel), padding=(0, spatial_kernel // 2))
             nn.init.zeros_(predictor.weight)
             nn.init.zeros_(predictor.bias)
             self.spatial_predictors.append(predictor)
             self.spatial_odd_entropies.append(FactorizedScoreEntropy(width))
+        if spatial_stages >= 3:
+            self.split_even_predictors = nn.ModuleList()
+            self.split_even_entropies = nn.ModuleList()
+            for width in self.group_sizes:
+                self.split_even_predictors.append(self._make_predictor(width, spatial_kernel))
+                self.split_even_entropies.append(FactorizedScoreEntropy(width))
+        if spatial_stages == 4:
+            self.split_odd_predictors = nn.ModuleList()
+            self.split_odd_entropies = nn.ModuleList()
+            for width in self.group_sizes:
+                self.split_odd_predictors.append(self._make_predictor(width, spatial_kernel))
+                self.split_odd_entropies.append(FactorizedScoreEntropy(width))
         # Evaluation diagnostics are opt-in so normal training/coding does not
         # pay for GPU reductions or device-to-host copies.
         self.mean_offset_enabled = True
         self.capture_diagnostics = False
         self.last_compress_diagnostics: dict[str, object] | None = None
+        self.last_compress_stage_bytes: dict[str, int] | None = None
+
+    @staticmethod
+    def _make_predictor(width: int, kernel: int):
+        predictor = nn.Conv2d(width, width, (1, kernel), padding=(0, kernel // 2))
+        nn.init.zeros_(predictor.weight)
+        nn.init.zeros_(predictor.bias)
+        return predictor
 
     @property
     def flags(self) -> int:
@@ -87,6 +122,12 @@ class ContextualScoreEntropy(nn.Module):
         flags |= self.FLAG_SPATIAL_ENTROPY_SPLIT
         if not self.mean_offset_enabled:
             flags |= self.FLAG_NO_MEAN_OFFSET
+        if self.spatial_stages == 3:
+            flags |= self.FLAG_THREE_STAGES
+        elif self.spatial_stages == 4:
+            flags |= self.FLAG_FOUR_STAGES
+        if self.spatial_kernel == 5:
+            flags |= self.FLAG_KERNEL5
         return flags
 
     def _entropy(
@@ -98,7 +139,117 @@ class ContextualScoreEntropy(nn.Module):
         self, base_entropy: FactorizedScoreEntropy
     ) -> Iterable[FactorizedScoreEntropy]:
         even = tuple(self.group_entropies)
-        return even + tuple(self.spatial_odd_entropies)
+        active = even + tuple(self.spatial_odd_entropies)
+        if self.spatial_stages >= 3:
+            active += tuple(self.split_even_entropies)
+        if self.spatial_stages == 4:
+            active += tuple(self.split_odd_entropies)
+        return active
+
+    def _entropy_forward(self, entropy, symbols, *, training):
+        value, likelihood = entropy(symbols, training=training)
+        is_training = self.training if training is None else training
+        if is_training and self.context_quantization == "ste":
+            # Match the sender/receiver lattice, including the learned median.
+            bottleneck = entropy.entropy_bottleneck
+            rounded = bottleneck.quantize(symbols, "dequantize", bottleneck._get_medians())
+            value = symbols + (rounded - symbols).detach()
+        return value, likelihood
+
+    def stage_indices(self, points: int, device):
+        indices = torch.arange(points, device=device)
+        if self.spatial_stages == 2:
+            return (("even", indices[0::2]), ("odd", indices[1::2]))
+        stages = [("A", indices[0::4]), ("B", indices[2::4])]
+        if self.spatial_stages == 3:
+            stages.append(("C+D", indices[1::2]))
+        else:
+            stages.extend((("C", indices[1::4]), ("D", indices[3::4])))
+        return tuple(stages)
+
+    def _stage_modules(self, stage, group):
+        if stage == 0:
+            return self.group_entropies[group], None
+        if stage == 1:
+            return self.split_even_entropies[group], self.split_even_predictors[group]
+        if stage == 2:
+            return self.spatial_odd_entropies[group], self.spatial_predictors[group]
+        return self.split_odd_entropies[group], self.split_odd_predictors[group]
+
+    def _staged(self, scene_mean, points, base_entropy, *, scores=None,
+                strings=None, training=None, mode="forward"):
+        """Stage-major coding: all channels of A precede any channels of B.
+
+        The sole predictor input is a canvas of previously reconstructed scores.
+        Original values of current/future stages never enter that canvas.
+        """
+        if points < 1:
+            raise ValueError("score stream must contain at least one token")
+        offset, step = self._scene_parameters(scene_mean)
+        base = offset[:, :, None, None].expand(-1, -1, 1, points)
+        decoded = torch.zeros_like(base)
+        likelihoods = torch.zeros_like(base)
+        visible = torch.zeros(1, 1, 1, points, device=base.device, dtype=torch.bool)
+        output_strings = []
+        stage_bytes = {}
+        for stage, (name, indices) in enumerate(self.stage_indices(points, base.device)):
+            # Future sites stay exactly zero even when mean/channel offsets exist.
+            context = torch.where(visible, decoded - base, torch.zeros_like(decoded))
+            reconstructed_groups, likelihood_groups = [], []
+            start, byte_count = 0, 0
+            for group, width in enumerate(self.group_sizes):
+                entropy, predictor = self._stage_modules(stage, group)
+                group_base = base[:, start:start + width]
+                if predictor is not None:
+                    group_base = group_base + predictor(context[:, start:start + width])
+                prediction = group_base.index_select(3, indices)
+                group_step = step[:, start:start + width, None, None]
+                # Tiny symbol arrays can under-allocate the native rANS buffer.
+                # Pad only the coding array; padding tokens never enter context.
+                coding_points = max(8, indices.numel())
+                if indices.numel() == 0:
+                    value = prediction
+                    likelihood = prediction
+                    payload = b""
+                    if mode == "decode" and strings[stage * len(self.group_sizes) + group]:
+                        raise ValueError("empty token stage received a nonempty entropy string")
+                elif mode == "decode":
+                    payload = strings[stage * len(self.group_sizes) + group]
+                    value = entropy.decompress([payload], (1, coding_points))[..., :indices.numel()]
+                    likelihood = None
+                else:
+                    target = scores[:, start:start + width].index_select(3, indices)
+                    symbols = (target - prediction) / group_step
+                    if mode == "encode":
+                        coding_symbols = torch.nn.functional.pad(symbols, (0, coding_points - indices.numel()))
+                        encoded = entropy.compress(coding_symbols)
+                        payload = encoded[0]
+                        value = entropy.decompress(encoded, coding_symbols.shape[-2:])[..., :indices.numel()]
+                        likelihood = None
+                    else:
+                        value, likelihood = self._entropy_forward(entropy, symbols, training=training)
+                reconstructed_groups.append(prediction + group_step * value)
+                if mode == "forward":
+                    likelihood_groups.append(likelihood)
+                else:
+                    byte_count += len(payload)
+                    if mode == "encode":
+                        output_strings.append(payload)
+                start += width
+            decoded = decoded.index_copy(3, indices, torch.cat(reconstructed_groups, 1))
+            if mode == "forward":
+                likelihoods = likelihoods.index_copy(3, indices, torch.cat(likelihood_groups, 1))
+            # torch.where saves its mask for backward; never mutate that mask.
+            visible = visible.clone()
+            visible[..., indices] = True
+            stage_bytes[name] = byte_count
+        if mode == "encode":
+            self.last_compress_stage_bytes = stage_bytes
+            return ScoreContextBitstream(self.rank, self.slice_channels, self.flags,
+                                         tuple(output_strings)).pack(), decoded
+        if mode == "decode":
+            return decoded
+        return decoded, likelihoods
 
     def _scene_parameters(self, scene_mean: Tensor) -> tuple[Tensor, Tensor]:
         if not self.mean_condition:
@@ -175,7 +326,7 @@ class ContextualScoreEntropy(nn.Module):
         *,
         training: bool | None,
     ) -> tuple[Tensor, Tensor]:
-        return self.spatial_odd_entropies[group_index](symbols, training=training)
+        return self._entropy_forward(self.spatial_odd_entropies[group_index], symbols, training=training)
 
     @torch.no_grad()
     def _odd_compress(
@@ -212,6 +363,9 @@ class ContextualScoreEntropy(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         if scores.ndim != 4 or scores.shape[1] != self.rank or scores.shape[2] != 1:
             raise ValueError(f"scores must have shape [B,{self.rank},1,N]")
+        if self.spatial_stages > 2:
+            return self._staged(scene_mean, scores.shape[-1], base_entropy,
+                                scores=scores, training=training)
         offset, step = self._scene_parameters(scene_mean)
         points = scores.shape[-1]
         decoded: list[Tensor] = []
@@ -223,7 +377,7 @@ class ContextualScoreEntropy(nn.Module):
             group_step = step[:, start : start + width, None, None]
             entropy = self._entropy(base_entropy, group_index)
             even_symbols = (target[..., 0::2] - base[..., 0::2]) / group_step
-            even_hat, even_likelihood = entropy(even_symbols, training=training)
+            even_hat, even_likelihood = self._entropy_forward(entropy, even_symbols, training=training)
             even_hat = base[..., 0::2] + group_step * even_hat
             odd_base = base[..., 1::2] + self._spatial_prediction(
                 group_index, even_hat, base
@@ -246,6 +400,10 @@ class ContextualScoreEntropy(nn.Module):
     ) -> tuple[bytes, Tensor]:
         if scores.shape[0] != 1:
             raise ValueError("contextual score bitstream stores one scene at a time")
+        if self.spatial_stages > 2:
+            if self.capture_diagnostics:
+                raise ValueError("b/even-odd diagnostics require 2 stages; use score stage byte records for 3/4 stages")
+            return self._staged(scene_mean, scores.shape[-1], base_entropy, scores=scores, mode="encode")
         offset, step = self._scene_parameters(scene_mean)
         self.last_compress_diagnostics = None
         diagnostics = None
@@ -330,6 +488,8 @@ class ContextualScoreEntropy(nn.Module):
             decoded.append(self._merge_even_odd(even_hat, odd_hat, points))
             start += width
         self.last_compress_diagnostics = diagnostics
+        self.last_compress_stage_bytes = {"even": sum(len(s) for s in strings[0::2]),
+                                          "odd": sum(len(s) for s in strings[1::2])}
         packed = ScoreContextBitstream(
             rank=self.rank,
             slice_channels=self.slice_channels,
@@ -357,11 +517,13 @@ class ContextualScoreEntropy(nn.Module):
             raise ValueError(
                 "contextual score bitstream does not match codec configuration"
             )
-        expected_strings = len(self.group_sizes) * 2
+        expected_strings = len(self.group_sizes) * self.spatial_stages
         if len(packed.strings) != expected_strings:
             raise ValueError(
                 "contextual score bitstream has an unexpected stream count"
             )
+        if self.spatial_stages > 2:
+            return self._staged(scene_mean, points, base_entropy, strings=packed.strings, mode="decode")
         offset, step = self._scene_parameters(scene_mean)
         decoded: list[Tensor] = []
         string_index = 0

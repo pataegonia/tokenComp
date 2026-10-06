@@ -86,6 +86,9 @@ class ObservableLowRank1DCodec(nn.Module):
                 hidden=config.score_context_hidden,
                 mean_condition=config.score_mean_condition,
                 channel_context=config.score_channel_context,
+                spatial_stages=config.score_spatial_stages,
+                spatial_kernel=config.score_spatial_kernel,
+                context_quantization=config.score_context_quantization,
             )
         self._freeze_inactive_score_entropy()
 

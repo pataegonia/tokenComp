@@ -32,9 +32,12 @@ class CodecConfig:
     score_spatial_hidden: int = 32
     score_slice_channels: int = 16
     score_context_hidden: int = 64
+    score_spatial_stages: int = 2
+    score_spatial_kernel: int = 3
+    score_context_quantization: str = "noise"
 
     def __post_init__(self) -> None:
-        # MSH residual and the even/odd spatial Split path remain mandatory.
+        # MSH residual and spatial Split coding remain mandatory.
         required = {
             "use_morton": True,
             "use_residual": True,
@@ -56,6 +59,17 @@ class CodecConfig:
             raise ValueError("transform must be linear or nonlinear")
         if not self.use_centering and self.score_mean_condition:
             raise ValueError("use_centering=false requires score_mean_condition=false (no mean is transmitted)")
+        if type(self.score_spatial_stages) is not int or self.score_spatial_stages not in (2, 3, 4):
+            raise ValueError("score_spatial_stages must be 2, 3 or 4")
+        if type(self.score_spatial_kernel) is not int or self.score_spatial_kernel not in (3, 5):
+            raise ValueError("score_spatial_kernel must be 3 or 5")
+        if self.score_context_quantization not in ("noise", "ste"):
+            raise ValueError("score_context_quantization must be noise or ste")
+        if self.score_spatial_stages > 2:
+            if self.score_spatial_kernel != 5:
+                raise ValueError("3/4 spatial stages require kernel 5 to see distance-2 context")
+            if self.score_channel_context:
+                raise ValueError("3/4 token stages require score_channel_context=false")
         for name in (
             "texture_channels",
             "geometry_channels",

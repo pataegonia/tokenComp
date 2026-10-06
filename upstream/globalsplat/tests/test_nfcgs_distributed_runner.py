@@ -14,6 +14,36 @@ spec.loader.exec_module(runner)
 
 
 class DistributedRunnerTests(unittest.TestCase):
+    def test_spatial_stage_cli_and_matched_control(self):
+        for stages in (2, 3, 4):
+            args = runner.parse_args([
+                "train", "--checkpoint", "split.ckpt", "--score-path", "minimal",
+                "--allow-score-path-conversion", "--score-spatial-stages", str(stages),
+                "--score-spatial-kernel", "5", "--score-context-quantization", "ste",
+                "--devices", "4", "--batch-size", "2", "--accumulate", "1",
+            ])
+            command, _, _ = runner.build_command(args)
+            self.assertEqual(args.devices * args.batch_size * args.accumulate, 8)
+            for setting in (f"model.feature_codec.score_spatial_stages={stages}",
+                            "model.feature_codec.score_spatial_kernel=5",
+                            "model.feature_codec.score_context_quantization=ste",
+                            "model.feature_codec.score_channel_context=false"):
+                self.assertIn(setting, command)
+        for stages in (3, 4):
+            args = runner.parse_args(["eval", "--score-path", "minimal", "--score-spatial-stages", str(stages)])
+            self.assertEqual((args.score_spatial_kernel, args.score_context_quantization), (5, "ste"))
+            command, _, _ = runner.build_command(args)
+            self.assertIn("test.max_scenes=null", command)
+        full = runner.parse_args(["eval"])
+        self.assertEqual((full.score_spatial_stages, full.score_spatial_kernel, full.score_context_quantization), (2, 3, "noise"))
+
+    def test_invalid_stage_combinations_fail_before_launch(self):
+        for flags in (["--score-spatial-stages", "3"],
+                      ["--score-path", "minimal", "--score-spatial-stages", "4", "--score-spatial-kernel", "3"],
+                      ["--score-path", "minimal", "--score-spatial-stages", "3", "--dump-score-context"]):
+            with self.assertRaises(SystemExit):
+                runner.parse_args(["eval", *flags])
+
     def test_minimal_four_gpu_recipe_keeps_effective_batch_and_optimizer_schedule(self):
         argv = ["train", "--checkpoint", "split.ckpt", "--rate-lambda", "0.0256",
                 "--score-path", "minimal", "--allow-score-path-conversion",

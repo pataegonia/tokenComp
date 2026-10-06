@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import torch
 from torch import Tensor, nn
@@ -17,6 +17,7 @@ FEATURE_PREFIXES = ("model.feature_codec.", "feature_codec.")
 SCORE_PATH_FIELDS = (
     "use_centering", "use_score_norm", "transform",
     "score_mean_condition", "score_channel_context",
+    "score_spatial_stages", "score_spatial_kernel", "score_context_quantization",
 )
 
 
@@ -103,6 +104,10 @@ def infer_config(
     adapter_hidden = state[
         "residual_codec.analysis_adapter.in_projection.weight"
     ].shape[0]
+    stages = 4 if any(key.startswith("score_context.split_odd_") for key in state) else (
+        3 if any(key.startswith("score_context.split_even_") for key in state) else 2
+    )
+    kernel = state["score_context.spatial_predictors.0.weight"].shape[-1]
     inferred = CodecConfig(
         texture_channels=texture_channels,
         geometry_channels=geometry_channels,
@@ -117,6 +122,9 @@ def infer_config(
             "score_context.group_entropies.0.entropy_bottleneck.quantiles"
         ].shape[0],
         score_context_hidden=state["score_context.mean_conditioner.1.weight"].shape[0],
+        score_spatial_stages=stages,
+        score_spatial_kernel=kernel,
+        score_channel_context=stages == 2,
     )
     _validate_spatial_predictor_state(state, inferred)
     if metadata is None:
@@ -143,7 +151,9 @@ def _validate_config(
             "score_spatial_predictor",
             "score_spatial_entropy",
             "score_spatial_hidden",
-            *SCORE_PATH_FIELDS,
+            *(key for key in SCORE_PATH_FIELDS if key not in (
+                "score_spatial_stages", "score_spatial_kernel"
+            )),
         }
     )
     expected_values = expected.to_dict()
@@ -170,6 +180,11 @@ def _validate_spatial_predictor_state(
             scene_channels=config.observable_channels,
             slice_channels=config.score_slice_channels,
             hidden=config.score_context_hidden,
+            mean_condition=config.score_mean_condition,
+            channel_context=config.score_channel_context,
+            spatial_stages=config.score_spatial_stages,
+            spatial_kernel=config.score_spatial_kernel,
+            context_quantization=config.score_context_quantization,
         )
     expected = {
         "score_context." + key: tuple(value.shape)
@@ -207,6 +222,50 @@ def validate_feature_codec_checkpoint(
     _validate_config(actual, config, include_flags=True)
 
 
+def convert_score_path_state(
+    state_dict: Mapping[str, Tensor], codec: ObservableLowRank1DCodec,
+) -> dict[str, Tensor]:
+    """Adapt only spatial score modules for an explicitly allowed warm start.
+
+    Kernel 3 weights occupy the middle of kernel 5. New B uses a zero predictor
+    and a copy of the even entropy model; new D copies the odd predictor/model.
+    Everything outside score_context is passed through untouched. This is a
+    weights-only conversion, never an optimizer/resume or evaluation migration.
+    """
+    state, feature_prefix = _feature_state_dict(state_dict)
+    prefix = feature_prefix + "score_context."
+    source = {key[len("score_context."):]: value for key, value in state.items()
+              if key.startswith("score_context.")}
+    converted = {key: value for key, value in state_dict.items()
+                 if not key.startswith(prefix)}
+    for key, initial in codec.score_context.state_dict().items():
+        source_key = key
+        if key not in source:
+            if key.startswith("split_even_entropies."):
+                source_key = key.replace("split_even_entropies.", "group_entropies.", 1)
+            elif key.startswith("split_odd_entropies."):
+                source_key = key.replace("split_odd_entropies.", "spatial_odd_entropies.", 1)
+            elif key.startswith("split_odd_predictors."):
+                source_key = key.replace("split_odd_predictors.", "spatial_predictors.", 1)
+            elif key.startswith("split_even_predictors."):
+                converted[prefix + key] = initial.detach().clone()
+                continue
+        if source_key not in source:
+            raise ValueError(f"cannot initialize score context tensor: {key}")
+        value = source[source_key]
+        if "predictors." in key and key.endswith(".weight") and value.shape != initial.shape:
+            if value.ndim != 4 or value.shape[:-1] != initial.shape[:-1]:
+                raise ValueError(f"cannot convert spatial predictor shape: {key}")
+            resized = value.new_zeros(initial.shape)
+            width = min(value.shape[-1], initial.shape[-1])
+            left_source = (value.shape[-1] - width) // 2
+            left_target = (initial.shape[-1] - width) // 2
+            resized[..., left_target:left_target + width] = value[..., left_source:left_source + width]
+            value = resized
+        converted[prefix + key] = value
+    return converted
+
+
 def validate_score_mean_offset_mode(
     checkpoint: Mapping[str, Any],
     codec: ObservableLowRank1DCodec,
@@ -222,6 +281,23 @@ def validate_score_mean_offset_mode(
     if saved != requested and not allow_conversion:
         raise ValueError(
             f"checkpoint score_mean_offset_enabled={saved}, requested={requested}"
+        )
+
+
+def validate_weights_only_load(
+    missing_keys: Iterable[str], unexpected_keys: Iterable[str],
+) -> None:
+    """Require all model weights, while allowing rebuilt frozen loss networks.
+
+    GlobalSplatModule.on_save_checkpoint intentionally strips render_criterion.
+    Unlike Lightning resume, a direct weights-only load does not call the hook
+    that restores those fixed tensors. The constructor already rebuilt them.
+    """
+    missing = [key for key in missing_keys if not key.startswith("render_criterion.")]
+    unexpected = [key for key in unexpected_keys if not key.startswith("render_criterion.")]
+    if missing or unexpected:
+        raise RuntimeError(
+            f"training checkpoint does not match model: missing={missing}, unexpected={unexpected}"
         )
 
 

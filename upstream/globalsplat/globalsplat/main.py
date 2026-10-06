@@ -398,8 +398,10 @@ def main(cfg: DictConfig) -> None:
         if getattr(lit.model, "feature_codec", None) is not None:
             from globalsplat.compression import resize_registered_buffers
             from globalsplat.compression.checkpoint import (
+                convert_score_path_state,
                 validate_feature_codec_checkpoint,
                 validate_score_mean_offset_mode,
+                validate_weights_only_load,
             )
 
             validate_feature_codec_checkpoint(
@@ -415,8 +417,18 @@ def main(cfg: DictConfig) -> None:
                     cfg.checkpointing.get("allow_score_mean_offset_conversion", False)
                 ),
             )
+            if cfg.checkpointing.get("allow_score_path_conversion", False):
+                state_dict = convert_score_path_state(state_dict, lit.model.feature_codec)
             resize_registered_buffers(lit, state_dict)
         missing, unexpected = lit.load_state_dict(state_dict, strict=False)
+        if getattr(lit.model, "feature_codec", None) is not None:
+            validate_weights_only_load(missing, unexpected)
+            fixed_loss_missing = [key for key in missing if key.startswith("render_criterion.")]
+            if fixed_loss_missing:
+                rank_zero_print(
+                    f"Retained {len(fixed_loss_missing)} re-created frozen loss-network tensors; "
+                    "all model weights matched the checkpoint."
+                )
         if cfg.checkpointing.get("reset_score_mean_offset", False):
             from globalsplat.compression.checkpoint import reset_score_mean_offset_head
 

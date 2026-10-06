@@ -61,6 +61,12 @@ def parse_args(argv=None):
     )
     for flag in ("centering", "score-norm", "mean-context", "channel-context", "nonlinear"):
         parser.add_argument(f"--{flag}", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--score-spatial-stages", type=int, choices=(2, 3, 4), default=2)
+    parser.add_argument("--score-spatial-kernel", type=int, choices=(3, 5))
+    parser.add_argument(
+        "--score-context-quantization", choices=("noise", "ste"),
+        help="ste uses reconstructed quantized values in training; likelihoods retain the noise relaxation",
+    )
     parser.add_argument(
         "--allow-score-path-conversion", action="store_true",
         help="allow score switch changes only for a weights-only training warm start",
@@ -107,6 +113,15 @@ def parse_args(argv=None):
         if requested_mean_context is True:
             parser.error("--mean-context requires --centering")
         args.mean_context = False
+    if args.score_spatial_kernel is None:
+        args.score_spatial_kernel = 5 if args.score_spatial_stages > 2 else 3
+    if args.score_context_quantization is None:
+        args.score_context_quantization = "ste" if args.score_spatial_stages > 2 else "noise"
+    if args.score_spatial_stages > 2:
+        if args.channel_context or args.score_spatial_kernel != 5:
+            parser.error("3/4 token stages require --no-channel-context (or --score-path minimal) and kernel 5")
+        if args.dump_score_context:
+            parser.error("3/4 stages save stage bytes automatically; even/odd b diagnostics require 2 stages")
     if args.from_scratch and (args.mode != "train" or args.checkpoint or args.resume):
         parser.error("--from-scratch requires train without --checkpoint or --resume")
     args.joint = args.joint or args.from_scratch
@@ -193,6 +208,9 @@ def build_command(args):
         f"model.feature_codec.score_mean_condition={str(args.mean_context).lower()}",
         f"model.feature_codec.score_channel_context={str(args.channel_context).lower()}",
         f"model.feature_codec.transform={'nonlinear' if args.nonlinear else 'linear'}",
+        f"model.feature_codec.score_spatial_stages={args.score_spatial_stages}",
+        f"model.feature_codec.score_spatial_kernel={args.score_spatial_kernel}",
+        f"model.feature_codec.score_context_quantization={args.score_context_quantization}",
     ]
     if args.mode == "eval":
         command += [

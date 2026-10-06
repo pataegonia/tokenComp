@@ -969,6 +969,15 @@ class GlobalSplatModule(pl.LightningModule):
                     "target_frame_ids": trg["frame_ids"].detach().cpu().reshape(-1).tolist(),
                 }
             )
+            stage_bytes = self.model.feature_codec.score_context.last_compress_stage_bytes
+            if stage_bytes is not None:
+                wrapper_bytes = stream_bytes["score"] - sum(stage_bytes.values())
+                if wrapper_bytes < 0:
+                    raise RuntimeError("score stage byte accounting exceeds score payload")
+                self.test_rate_records[-1].update({
+                    "score_stage_bytes": dict(stage_bytes),
+                    "score_stage_wrapper_bytes": wrapper_bytes,
+                })
             if self.score_context_diagnostics:
                 diagnostics = self.model.feature_codec.score_context.last_compress_diagnostics
                 if diagnostics is None:
@@ -1044,6 +1053,25 @@ class GlobalSplatModule(pl.LightningModule):
                 values = [float(record[field]) for record in self.test_rate_records]
                 saved[field] = sum(values) / len(values)
                 print(f"{field}: {saved[field]:.6f}")
+
+            stage_rows = [record for record in self.test_rate_records if "score_stage_bytes" in record]
+            if stage_rows:
+                stages = list(stage_rows[0]["score_stage_bytes"])
+                totals = {name: sum(row["score_stage_bytes"][name] for row in stage_rows)
+                          for name in stages}
+                config = self.model.feature_codec.config
+                stage_summary = {
+                    "scene_count": len(stage_rows),
+                    "spatial_stages": config.score_spatial_stages,
+                    "spatial_kernel": config.score_spatial_kernel,
+                    "context_quantization": config.score_context_quantization,
+                    "stage_order": stages,
+                    "total_entropy_bytes": totals,
+                    "mean_entropy_bytes": {name: size / len(stage_rows) for name, size in totals.items()},
+                    "mean_wrapper_bytes": sum(row["score_stage_wrapper_bytes"] for row in stage_rows) / len(stage_rows),
+                }
+                with (out_dir / "score_stage_summary.json").open("w") as f:
+                    json.dump(stage_summary, f, indent=2)
 
         if self.score_context_diagnostic_records:
             with (out_dir / "score_context_b_per_scene.json").open("w") as f:

@@ -1,5 +1,9 @@
 # Score path on/off ablation
 
+The spatial-only path also supports 3/4 token stages. See
+[Morton spatial stages](NFCGS_SCORE_SPATIAL_STAGES.md) for the matched kernel-5
+2/3/4-stage training and full-scene evaluation scripts.
+
 ## Settings
 
 The default remains the existing Full P0 + even/odd Split codec. `minimal`
