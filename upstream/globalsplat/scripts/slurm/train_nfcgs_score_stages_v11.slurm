@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH -J gs-score-stages
 #SBATCH --nodes=1
-#SBATCH --nodelist=ariel-v11
+#SBATCH --exclude=ariel-v7
 #SBATCH --gres=gpu:normal:4
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=8
@@ -14,6 +14,7 @@
 
 # Matched 2/3/4-stage comparison: kernel 5 + quantized STE context in every arm.
 # MSH stays enabled. Four GPUs * batch 2 * accumulation 1 = effective batch 8.
+# Slurm selects an eligible normal-GPU node in batch_ugrad, excluding v6/v7.
 set -euo pipefail
 REPO_DIR="${REPO_DIR:-${SLURM_SUBMIT_DIR:-$(pwd -P)}}"
 cd "${REPO_DIR}"

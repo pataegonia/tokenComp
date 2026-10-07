@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH -J gs-score-stages-eval
 #SBATCH --nodes=1
-#SBATCH --nodelist=ariel-v11
+#SBATCH --exclude=ariel-v7
 #SBATCH --gres=gpu:normal:1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=8

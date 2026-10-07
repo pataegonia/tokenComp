@@ -69,12 +69,16 @@ flags에도 기록한다. 호환되지 않는 decoder는 복호화 전에 거부
 복원 직후 잘라낸다. Padding은 token context와 reconstruction에 포함되지 않는다.
 빈 단계는 빈 string으로 저장한다. 일반적인 4096-token scene에는 이 padding이 없다.
 
-## v11 실행
+## Normal GPU 노드 실행 — v6/v7 제외
 
 서버 repository에서 실행한다. Train은 normal GPU 4개, effective batch 8
 (`4 × batch 2 × accumulation 1`), lr `1e-4`, 추가 50k optimizer step,
 35k/45k LR milestone, 5k checkpoint 간격이다. λ 기본값은 `0.0256`이다.
 Eval은 normal GPU 1개로 전체 eval scene에 actual bitstream 평가를 수행한다.
+Train과 eval 모두 `batch_ugrad`에서 `ariel-v6,ariel-v7`을 제외하고 노드를
+자동 배정받는다. 현재 normal GPU 목록 기준 후보는 v8/v9/v10/v11/v12다.
+자원이 부족하면 pending 상태로 기다린다. 스크립트 파일명의 `_v11`은 기존
+제출 명령과의 호환을 위해 유지했으며, v11에 고정하는 설정은 제거했다.
 
 먼저 3단계만 학습하고, 성공 후 자동 eval:
 
