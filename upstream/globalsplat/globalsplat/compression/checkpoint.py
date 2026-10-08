@@ -18,6 +18,7 @@ SCORE_PATH_FIELDS = (
     "use_centering", "use_score_norm", "transform",
     "score_mean_condition", "score_channel_context",
     "score_spatial_stages", "score_spatial_kernel", "score_context_quantization",
+    "token_order", "score_order_scale", "score_context_schedule",
 )
 
 
@@ -108,6 +109,10 @@ def infer_config(
         3 if any(key.startswith("score_context.split_even_") for key in state) else 2
     )
     kernel = state["score_context.spatial_predictors.0.weight"].shape[-1]
+    anchor_key = "score_context.anchor_predictors.0.0.weight"
+    schedule = "legacy"
+    if anchor_key in state:
+        schedule = "quarter2" if state[anchor_key].shape[0] == 3 else "dyadic4"
     inferred = CodecConfig(
         texture_channels=texture_channels,
         geometry_channels=geometry_channels,
@@ -124,7 +129,8 @@ def infer_config(
         score_context_hidden=state["score_context.mean_conditioner.1.weight"].shape[0],
         score_spatial_stages=stages,
         score_spatial_kernel=kernel,
-        score_channel_context=stages == 2,
+        score_channel_context=stages == 2 and schedule == "legacy",
+        score_context_schedule=schedule,
     )
     _validate_spatial_predictor_state(state, inferred)
     if metadata is None:
@@ -152,7 +158,7 @@ def _validate_config(
             "score_spatial_entropy",
             "score_spatial_hidden",
             *(key for key in SCORE_PATH_FIELDS if key not in (
-                "score_spatial_stages", "score_spatial_kernel"
+                "score_spatial_stages", "score_spatial_kernel", "score_context_schedule"
             )),
         }
     )
@@ -185,6 +191,7 @@ def _validate_spatial_predictor_state(
             spatial_stages=config.score_spatial_stages,
             spatial_kernel=config.score_spatial_kernel,
             context_quantization=config.score_context_quantization,
+            context_schedule=config.score_context_schedule,
         )
     expected = {
         "score_context." + key: tuple(value.shape)
@@ -240,6 +247,11 @@ def convert_score_path_state(
                  if not key.startswith(prefix)}
     for key, initial in codec.score_context.state_dict().items():
         source_key = key
+        if key.startswith("anchor_predictors.") and (
+            key not in source or source[key].shape != initial.shape
+        ):
+            converted[prefix + key] = initial.detach().clone()
+            continue
         if key not in source:
             if key.startswith("split_even_entropies."):
                 source_key = key.replace("split_even_entropies.", "group_entropies.", 1)

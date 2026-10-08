@@ -144,6 +144,45 @@ class MainRunnerTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             runner.parse_args(["train"])
 
+    def test_order_and_anchor_switches_compose_independently(self):
+        for order in ("morton", "hilbert", "nn_xyz", "nn_score"):
+            for schedule, stages in (("legacy", 2), ("quarter2", 2), ("dyadic4", 4)):
+                args = runner.parse_args(["train", "--checkpoint", "full.ckpt",
+                    "--score-path", "minimal", "--allow-score-path-conversion",
+                    "--token-order", order, "--score-context-schedule", schedule])
+                composed = self.composed(args)
+                codec = CodecConfig.from_mapping(composed.model.feature_codec)
+                self.assertEqual(codec.token_order, order)
+                self.assertEqual(codec.score_context_schedule, schedule)
+                self.assertEqual(codec.score_spatial_stages, stages)
+                self.assertTrue(codec.use_residual)
+                self.assertFalse(codec.score_channel_context)
+                if schedule != "legacy":
+                    self.assertEqual(codec.score_context_quantization, "ste")
+        args = runner.parse_args(["eval", "--score-context-schedule", "quarter2"])
+        self.assertFalse(args.channel_context)
+        self.assertTrue(args.centering)
+        for argv in (
+            ["eval", "--score-context-schedule", "dyadic4", "--score-spatial-stages", "3"],
+            ["eval", "--score-context-schedule", "quarter2", "--channel-context"],
+            ["eval", "--score-context-schedule", "quarter2", "--dump-score-context"],
+        ):
+            with self.assertRaises(SystemExit):
+                runner.parse_args(argv)
+
+    def test_score_sort_calibration_is_saved_in_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scale.json"
+            path.write_text(json.dumps([.5] * 56), encoding="utf-8")
+            args = runner.parse_args(["eval", "--token-order", "nn_score", "--score-order-scale", str(path)])
+            codec = CodecConfig.from_mapping(self.composed(args).model.feature_codec)
+            self.assertEqual(codec.score_order_scale, (.5,) * 56)
+            with self.assertRaises(SystemExit):
+                runner.parse_args(["eval", "--score-order-scale", str(path)])
+            path.write_text(json.dumps([0] * 56), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                runner.parse_args(["eval", "--token-order", "nn_score", "--score-order-scale", str(path)])
+
     def test_scratch_has_no_checkpoint_and_trains_full_model_with_curriculum(self):
         args = runner.parse_args(["train", "--from-scratch"])
         _, checkpoint, _ = runner.build_command(args)

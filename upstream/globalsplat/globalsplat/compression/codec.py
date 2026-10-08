@@ -10,6 +10,7 @@ from .entropy import FactorizedScoreEntropy
 from .morton import MortonOrder, morton_order_3d
 from .residual import ResidualHyperprior1D
 from .score_context import ContextualScoreEntropy
+from .token_order import greedy_neighbor_order, hilbert_order_3d
 
 
 @dataclass(slots=True)
@@ -89,6 +90,7 @@ class ObservableLowRank1DCodec(nn.Module):
                 spatial_stages=config.score_spatial_stages,
                 spatial_kernel=config.score_spatial_kernel,
                 context_quantization=config.score_context_quantization,
+                context_schedule=config.score_context_schedule,
             )
         self._freeze_inactive_score_entropy()
 
@@ -154,8 +156,37 @@ class ObservableLowRank1DCodec(nn.Module):
             value = value + self.analysis_mlp(centered)
         return value
 
-    def _make_order(self, positions: Tensor) -> MortonOrder:
-        return morton_order_3d(positions, self.config.morton_bits)
+    def _make_order(self, positions: Tensor, features: Tensor | None = None,
+                    scene_mean: Tensor | None = None) -> MortonOrder:
+        mode, bits = self.config.token_order, self.config.morton_bits
+        if mode == "morton":
+            return morton_order_3d(positions, bits)
+        if mode == "hilbert":
+            return hilbert_order_3d(positions, bits)
+        if mode == "nn_xyz":
+            return greedy_neighbor_order(positions, positions, bits=bits, metric="l2")
+        if features is None:
+            raise ValueError("nn_score order requires unquantized input features")
+        # Use pre-context, pre-quantization scores. Only the permutation is
+        # detached: the regular analysis/MSH pass below still receives gradients.
+        with torch.no_grad(), torch.autocast(device_type=features.device.type, enabled=False):
+            mean = self._scene_mean(features.float()) if scene_mean is None else scene_mean.float()
+            score = self._analyze_low_rank(features.float() - mean[:, None, :])
+            score = score / self.score_scale[None, None, :]
+            _, step = self.score_context._scene_parameters(mean)
+            units = score / step[:, None, :]
+            if self.config.score_order_scale is None:
+                scale = units.abs().mean(dim=1, keepdim=True).clamp_min(.05)
+            else:
+                scale = units.new_tensor(self.config.score_order_scale)[None, None, :]
+            return greedy_neighbor_order(units / scale, positions, bits=bits, metric="l1")
+
+    def _ordered_features(self, features: Tensor, positions: Tensor):
+        # Compute the transmitted FP16 mean once, before value-dependent sorting.
+        # Legacy paths retain their original reduction order and output bytes.
+        mean = self._scene_mean(features) if self.config.token_order == "nn_score" else None
+        order = self._make_order(positions, features, mean)
+        return order.apply(features), order, mean
 
     def _freeze_inactive_score_entropy(self) -> None:
         for parameter in self.score_entropy.parameters():
@@ -215,9 +246,10 @@ class ObservableLowRank1DCodec(nn.Module):
         return quantized
 
     def _analyze_sorted(
-        self, sorted_features: Tensor, *, training: bool | None = None
+        self, sorted_features: Tensor, *, training: bool | None = None,
+        scene_mean: Tensor | None = None,
     ) -> tuple[Tensor, dict[str, Tensor]]:
-        mean = self._scene_mean(sorted_features)
+        mean = self._scene_mean(sorted_features) if scene_mean is None else scene_mean
         centered = sorted_features - mean[:, None, :]
         score = self._analyze_low_rank(centered)
         normalized_score = score / self.score_scale[None, None, :]
@@ -258,9 +290,8 @@ class ObservableLowRank1DCodec(nn.Module):
         training: bool | None = None,
     ) -> CodecOutput:
         features = self._pack_features(texture, geometry)
-        order = self._make_order(positions)
-        features = order.apply(features)
-        reconstruction, likelihoods = self._analyze_sorted(features, training=training)
+        features, order, mean = self._ordered_features(features, positions)
+        reconstruction, likelihoods = self._analyze_sorted(features, training=training, scene_mean=mean)
         split = reconstruction
         if restore_original_order:
             split = order.restore(split)
@@ -277,9 +308,8 @@ class ObservableLowRank1DCodec(nn.Module):
         if texture.shape[0] != 1:
             raise ValueError("the E2EM0301 scene container stores one scene at a time")
         features = self._pack_features(texture, geometry)
-        order = self._make_order(positions)
-        features = order.apply(features)
-        mean = self._scene_mean(features)
+        features, order, mean = self._ordered_features(features, positions)
+        mean = self._scene_mean(features) if mean is None else mean
         centered = features - mean[:, None, :]
         score = self._analyze_low_rank(centered)
         normalized = score / self.score_scale[None, None, :]

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime
 import os
 from pathlib import Path
@@ -61,15 +62,19 @@ def parse_args(argv=None):
     )
     for flag in ("centering", "score-norm", "mean-context", "channel-context", "nonlinear"):
         parser.add_argument(f"--{flag}", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--score-spatial-stages", type=int, choices=(2, 3, 4), default=2)
-    parser.add_argument("--score-spatial-kernel", type=int, choices=(3, 5))
+    parser.add_argument("--token-order", choices=("morton", "hilbert", "nn_xyz", "nn_score"), default="morton")
+    parser.add_argument("--score-order-scale", type=Path,
+                        help="JSON list of rank positive scales in quantization units for nn_score; default: scene mean absolute values")
+    parser.add_argument("--score-context-schedule", choices=("legacy", "quarter2", "dyadic4"), default="legacy")
+    parser.add_argument("--score-spatial-stages", type=int, choices=(2, 3, 4))
+    parser.add_argument("--score-spatial-kernel", type=int, choices=(3, 5, 7))
     parser.add_argument(
         "--score-context-quantization", choices=("noise", "ste"),
         help="ste uses reconstructed quantized values in training; likelihoods retain the noise relaxation",
     )
     parser.add_argument(
         "--allow-score-path-conversion", action="store_true",
-        help="allow score switch changes only for a weights-only training warm start",
+        help="allow score/order switch changes only for a weights-only training warm start",
     )
     parser.add_argument(
         "--no-score-mean-offset",
@@ -105,6 +110,7 @@ def parse_args(argv=None):
         parser.error("--allow-score-path-conversion requires weights-only training from --checkpoint")
     default_enabled = args.score_path == "full"
     requested_mean_context = args.mean_context
+    requested_channel_context = args.channel_context
     for name in ("centering", "score_norm", "mean_context", "channel_context", "nonlinear"):
         if getattr(args, name) is None:
             setattr(args, name, default_enabled)
@@ -113,15 +119,39 @@ def parse_args(argv=None):
         if requested_mean_context is True:
             parser.error("--mean-context requires --centering")
         args.mean_context = False
+    if args.score_spatial_stages is None:
+        args.score_spatial_stages = 4 if args.score_context_schedule == "dyadic4" else 2
+    if args.score_context_schedule != "legacy":
+        expected_stages = 2 if args.score_context_schedule == "quarter2" else 4
+        if args.score_spatial_stages != expected_stages:
+            parser.error(f"{args.score_context_schedule} requires {expected_stages} spatial stages")
+        if requested_channel_context is True:
+            parser.error("anchor schedules require --no-channel-context")
+        args.channel_context = False
+    args.score_order_scale_values = None
+    if args.score_order_scale is not None:
+        if args.token_order != "nn_score":
+            parser.error("--score-order-scale requires --token-order nn_score")
+        try:
+            from math import isfinite
+            values = json.loads(args.score_order_scale.read_text(encoding="utf-8"))
+            if not isinstance(values, list) or len(values) != 56 or any(
+                isinstance(v, bool) or not isinstance(v, (int, float)) or not isfinite(v) or v <= 0 for v in values
+            ):
+                raise ValueError("expected 56 finite positive numbers")
+            args.score_order_scale_values = values
+        except (OSError, ValueError) as error:
+            parser.error(f"invalid --score-order-scale: {error}")
     if args.score_spatial_kernel is None:
         args.score_spatial_kernel = 5 if args.score_spatial_stages > 2 else 3
     if args.score_context_quantization is None:
-        args.score_context_quantization = "ste" if args.score_spatial_stages > 2 else "noise"
-    if args.score_spatial_stages > 2:
-        if args.channel_context or args.score_spatial_kernel != 5:
-            parser.error("3/4 token stages require --no-channel-context (or --score-path minimal) and kernel 5")
+        args.score_context_quantization = "ste" if args.score_spatial_stages > 2 or args.score_context_schedule != "legacy" else "noise"
+    if args.score_spatial_stages > 2 and args.score_context_schedule == "legacy":
+        if args.channel_context or args.score_spatial_kernel not in (5, 7):
+            parser.error("3/4 token stages require --no-channel-context (or --score-path minimal) and kernel 5 or 7")
+    if args.score_spatial_stages > 2 or args.score_context_schedule != "legacy":
         if args.dump_score_context:
-            parser.error("3/4 stages save stage bytes automatically; even/odd b diagnostics require 2 stages")
+            parser.error("staged/anchor contexts save stage bytes; even/odd b diagnostics require legacy 2 stages")
     if args.from_scratch and (args.mode != "train" or args.checkpoint or args.resume):
         parser.error("--from-scratch requires train without --checkpoint or --resume")
     args.joint = args.joint or args.from_scratch
@@ -211,6 +241,10 @@ def build_command(args):
         f"model.feature_codec.score_spatial_stages={args.score_spatial_stages}",
         f"model.feature_codec.score_spatial_kernel={args.score_spatial_kernel}",
         f"model.feature_codec.score_context_quantization={args.score_context_quantization}",
+        f"model.feature_codec.token_order={args.token_order}",
+        f"model.feature_codec.score_context_schedule={args.score_context_schedule}",
+        "model.feature_codec.score_order_scale=" + (json.dumps(args.score_order_scale_values, separators=(",", ":"))
+                                                    if args.score_order_scale_values is not None else "null"),
     ]
     if args.mode == "eval":
         command += [
