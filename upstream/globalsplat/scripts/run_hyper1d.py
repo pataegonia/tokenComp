@@ -31,6 +31,8 @@ def parse_args(argv=None):
     parser.add_argument("--accumulate", type=int, default=4)
     parser.add_argument("--validate-every", type=int, default=2000, help="updates; converted to training batches")
     parser.add_argument("--checkpoint-every", type=int, default=2000)
+    parser.add_argument("--checkpoint-keep", type=int, help="keep this many recent periodic checkpoints instead of all")
+    parser.add_argument("--no-save-last", action="store_true", help="save numbered checkpoints without a duplicate last.ckpt")
     parser.add_argument("--max-scenes", type=int, default=128)
     parser.add_argument("--sample-test", action="store_true", help="sample test scene IDs with a fixed seed, excluding the run's validation scenes")
     parser.add_argument("--sample-seed", type=int, default=111123)
@@ -56,6 +58,10 @@ def parse_args(argv=None):
         parser.error("eval requires --checkpoint without --resume")
     if args.mode == "eval" and args.no_time_limit:
         parser.error("--no-time-limit is train-only")
+    if args.mode == "eval" and (args.checkpoint_keep is not None or args.no_save_last):
+        parser.error("checkpoint-keep and no-save-last are train-only")
+    if args.checkpoint_keep is not None and args.checkpoint_keep < 1:
+        parser.error("checkpoint-keep must be positive")
     if args.mode == "eval" and (args.devices != 1 or args.launcher != "python"):
         parser.error("actual-bitstream eval requires one GPU and the python launcher")
     if args.resume and not args.checkpoint:
@@ -131,6 +137,10 @@ def build_command(args, output, checkpoint, codec_config=None):
                 f"trainer.val_check_interval={args.validate_every * args.accumulate}",
                 f"trainer.limit_val_batches={args.max_scenes}",
                 f"checkpointing.every_n_train_steps={args.checkpoint_every}"]
+        if args.checkpoint_keep is not None:
+            cmd.append(f"checkpointing.save_top_k={args.checkpoint_keep}")
+        if args.no_save_last:
+            cmd.append("checkpointing.save_last=false")
     else:
         cmd += ["mode=test", "dataset=re10k_eval_all_ctx12", "optimizer.batch_size=1",
                 "test.actual_bitstream=true", "test.score_context_diagnostics=false",

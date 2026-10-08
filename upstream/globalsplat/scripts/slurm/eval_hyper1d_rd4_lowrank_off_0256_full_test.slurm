@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-gpu=48G
 #SBATCH -p batch_ugrad
-#SBATCH -x ariel-v[6-7]
+#SBATCH -x ariel-v[7]
 #SBATCH -t 12:00:00
 #SBATCH -o logs/slurm/slurm-gs-rd4-lr0256-eval-%j.out
 #SBATCH -e logs/slurm/slurm-gs-rd4-lr0256-eval-%j.err

@@ -320,8 +320,11 @@ def main(cfg: DictConfig) -> None:
         dirpath=(run.ckpt_dir if run is not None else exp_ckpt_base),
         filename="step{step:09d}",
         auto_insert_metric_name=False,
-        save_last=True,
+        save_last=cfg.checkpointing.get("save_last", True),
         save_top_k=cfg.checkpointing.save_top_k,
+        # Lightning provides "step" itself; keep the newest K, not the best loss.
+        monitor=("step" if cfg.checkpointing.save_top_k > 1 else None),
+        mode="max",
         every_n_train_steps=cfg.checkpointing.every_n_train_steps,
     )
 
@@ -441,7 +444,11 @@ def main(cfg: DictConfig) -> None:
     trainer.fit(lit, datamodule=datamodule, ckpt_path=run.resume_ckpt)
     if cfg.checkpointing.get("save_on_train_end", False):
         # Timer may stop between periodic checkpoints. Keep optimizer/scheduler state.
-        trainer.save_checkpoint(os.path.join(run.ckpt_dir, "last.ckpt"))
+        final_name = (
+            "last.ckpt" if cfg.checkpointing.get("save_last", True)
+            else f"step{trainer.global_step:09d}.ckpt"
+        )
+        trainer.save_checkpoint(os.path.join(run.ckpt_dir, final_name))
     if (cfg.get("validation", {}).get("run_on_train_end", False)
             and getattr(lit, "_last_actual_validation_step", None) != trainer.global_step):
         trainer.validate(lit, datamodule=datamodule, ckpt_path=None)
