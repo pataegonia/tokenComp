@@ -30,7 +30,7 @@ def baseline_checkpoint(rate: str) -> Path:
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("train", "eval"))
-    parser.add_argument("--rate-lambda", choices=("0.0064", "0.0256"), default="0.0256")
+    parser.add_argument("--rate-lambda", choices=("0.0064", "0.0128", "0.0256"), default="0.0256")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument(
         "--from-scratch",
@@ -159,6 +159,8 @@ def parse_args(argv=None):
         parser.error("joint training requires train with --scope all")
     if args.mode == "eval" and args.resume:
         parser.error("--resume is only valid for train")
+    if args.mode == "eval" and args.rate_lambda == "0.0128" and args.checkpoint is None:
+        parser.error("lambda 0.0128 has no pretrained FullSplit parent; eval requires --checkpoint")
     if args.mode != "eval" and args.dump_score_context:
         parser.error("--dump-score-context is only valid for eval")
     if args.reset_score_mean_offset and (

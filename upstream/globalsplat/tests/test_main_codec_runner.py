@@ -44,6 +44,21 @@ class MainRunnerTests(unittest.TestCase):
                 self.assertEqual(config.curriculum.final_stage, 3)
                 self.assertTrue(config.model.freeze_globalsplat)
 
+    def test_middle_rd_rate_uses_explicit_checkpoint_in_train_and_eval(self):
+        for mode in ("train", "eval"):
+            args = runner.parse_args([mode, "--checkpoint", "rd.ckpt", "--rate-lambda", "0.0128",
+                "--score-path", "minimal", "--token-order", "hilbert", "--score-spatial-stages", "3"])
+            config = self.composed(args)
+            self.assertEqual(config.loss.rate_lambda, .0128)
+            self.assertTrue(config.checkpointing.load.endswith("rd.ckpt"))
+            self.assertEqual(config.model.feature_codec.token_order, "hilbert")
+            self.assertTrue(config.model.feature_codec.use_residual)
+            if mode == "eval":
+                self.assertTrue(config.test.actual_bitstream)
+                self.assertIsNone(config.test.max_scenes)
+        with self.assertRaises(SystemExit):
+            runner.parse_args(["eval", "--rate-lambda", "0.0128"])
+
     def test_training_scopes_keep_recipe_and_explicit_resume(self):
         for scope in ("all", "score_probability"):
             args = runner.parse_args(

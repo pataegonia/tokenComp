@@ -16,7 +16,7 @@ if [[ "${CONTEXT_SCHEDULE}" == legacy && "${STAGES}" != 2 && "${KERNEL}" == 3 ]]
   echo "legacy 3/4 stages require KERNEL=5 or 7" >&2; exit 2
 fi
 RATE_LAMBDA="${RATE_LAMBDA:-0.0256}"
-case "${RATE_LAMBDA}" in 0.0064|0.0256) ;; *) echo "invalid RATE_LAMBDA" >&2; exit 2 ;; esac
+case "${RATE_LAMBDA}" in 0.0064|0.0128|0.0256) ;; *) echo "RATE_LAMBDA must be 0.0064, 0.0128 or 0.0256" >&2; exit 2 ;; esac
 MAX_STEPS="${MAX_STEPS:-50000}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-5000}"
 [[ "${MAX_STEPS}" =~ ^[1-9][0-9]*$ && "${CHECKPOINT_EVERY}" =~ ^[1-9][0-9]*$ ]] || { echo "steps must be positive integers" >&2; exit 2; }
