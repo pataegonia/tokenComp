@@ -8,7 +8,7 @@ from globalsplat.compression.mechanism import (
     StageRecorder, fixed_score_relations, observe_stages, payload_components,
     references, schedule_references,
 )
-from test_score_path_ablation import MINIMAL, config
+from codec_helpers import config
 
 
 class MechanismTests(unittest.TestCase):
@@ -17,10 +17,10 @@ class MechanismTests(unittest.TestCase):
         torch.set_num_threads(1)
 
     def make(self, schedule="legacy", enabled=True):
-        codec = ObservableLowRank1DCodec(config(**MINIMAL, token_order="none",
+        codec = ObservableLowRank1DCodec(config(token_order="none",
             score_spatial_context=enabled, score_context_schedule=schedule,
             score_spatial_stages=2 if schedule == "quarter2" else 4 if schedule == "dyadic4" else 3,
-            score_spatial_kernel=5, score_context_quantization="ste")).eval()
+            score_spatial_kernel=5)).eval()
         with torch.no_grad():
             for name, p in codec.score_context.named_parameters():
                 if "predictors." in name:
@@ -36,15 +36,14 @@ class MechanismTests(unittest.TestCase):
                 codec = self.make(schedule)
                 context = codec.score_context
                 score, xyz = torch.randn(1, 7, 1, 65), torch.randn(1, 65, 3)
-                mean = torch.zeros(1, codec.config.observable_channels)
-                expected, expected_hat = context.compress(score, mean, codec.score_entropy)
+                expected, expected_hat = context.compress(score)
                 before = {k: v.clone() for k, v in codec.state_dict().items()}
                 recorder = StageRecorder(score, xyz, keep_tensors=True)
                 with observe_stages(context, recorder):
-                    packet, actual = context.compress(score, mean, codec.score_entropy)
+                    packet, actual = context.compress(score)
                 self.assertEqual(packet, expected)
                 torch.testing.assert_close(actual, expected_hat, rtol=0, atol=0)
-                received = context.decompress(packet, mean, 65, codec.score_entropy)
+                received = context.decompress(packet, 65)
                 torch.testing.assert_close(received, actual, rtol=0, atol=0)
                 torch.testing.assert_close(recorder.reconstruction, received[0, :, 0].T, rtol=0, atol=0)
                 stages = recorder.summary()
@@ -80,7 +79,7 @@ class MechanismTests(unittest.TestCase):
         score, xyz = torch.randn(1, 7, 1, 65) * 3, torch.randn(1, 65, 3)
         recorder = StageRecorder(score, xyz, keep_tensors=True)
         with observe_stages(codec.score_context, recorder), torch.no_grad():
-            codec.score_context.compress(score, torch.zeros(1, codec.config.observable_channels), codec.score_entropy)
+            codec.score_context.compress(score)
         for group, trace in zip(recorder.groups, recorder.tensors):
             width, start = group["width"], group["start"]
             scale = recorder.scale[start:start+width]

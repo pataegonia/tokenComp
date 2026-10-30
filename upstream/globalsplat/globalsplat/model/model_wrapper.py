@@ -312,9 +312,6 @@ class GlobalSplatModule(pl.LightningModule):
         codec = getattr(self.model, "feature_codec", None)
         if codec is not None:
             checkpoint["feature_codec_config"] = codec.config.to_dict()
-            checkpoint["score_mean_offset_enabled"] = (
-                codec.score_context.mean_offset_enabled if codec.score_context is not None else True
-            )
         # Save only the model's own weights. The perceptual-loss VGG and the
         # (optional) LPIPS network under ``render_criterion.*`` are frozen,
         # pretrained feature extractors re-created identically on load, so they
@@ -348,13 +345,14 @@ class GlobalSplatModule(pl.LightningModule):
             # CompressAI registers empty CDF buffers at construction time. Match
             # their saved shapes before Lightning performs its strict load.
             from ..compression import resize_registered_buffers
-            from ..compression.checkpoint import (
-                validate_feature_codec_checkpoint,
-                validate_score_mean_offset_mode,
-            )
+            from ..compression.checkpoint import strip_retired_state, validate_feature_codec_checkpoint
 
             validate_feature_codec_checkpoint(checkpoint, self.model.feature_codec.config)
-            validate_score_mean_offset_mode(checkpoint, self.model.feature_codec)
+            # Pre-cleanup retired modules were frozen, so the optimizer state
+            # covers the same trainable tensors after their removal.
+            kept = strip_retired_state(sd)
+            for key in [k for k in sd if k not in kept]:
+                del sd[key]
             resize_registered_buffers(self, sd)
         if not hasattr(self, "render_criterion"):
             return
@@ -902,23 +900,11 @@ class GlobalSplatModule(pl.LightningModule):
         if self.record_scene_metrics:
             self.test_step_outputs["mse"] = []
         self.test_rate_records = []
-        self.score_context_diagnostic_records = []
         self.actual_bitstream = bool(self.test_cfg.get("actual_bitstream", False))
-        self.score_context_diagnostics = bool(
-            self.test_cfg.get("score_context_diagnostics", False)
-        )
         codec = getattr(self.model, "feature_codec", None)
-        if self.score_context_diagnostics and not self.actual_bitstream:
-            raise ValueError(
-                "test.score_context_diagnostics=true requires actual-bitstream evaluation"
-            )
         if self.actual_bitstream:
             if codec is None:
                 raise ValueError("test.actual_bitstream=true requires model.feature_codec")
-            if codec.score_context is not None:
-                codec.score_context.capture_diagnostics = self.score_context_diagnostics
-            elif self.score_context_diagnostics:
-                raise ValueError("Score diagnostics require a Score path")
             # Lightning's checkpoint callback runs before our batch-end CDF
             # refresh, so populated tables may lag the saved entropy weights.
             # Rebuild tables from those weights while preserving the saved
@@ -1011,13 +997,6 @@ class GlobalSplatModule(pl.LightningModule):
                     "score_stage_bytes": dict(stage_bytes),
                     "score_stage_wrapper_bytes": wrapper_bytes,
                 })
-            if self.score_context_diagnostics:
-                diagnostics = self.model.feature_codec.score_context.last_compress_diagnostics
-                if diagnostics is None:
-                    raise RuntimeError("score-context diagnostics were not captured")
-                self.score_context_diagnostic_records.append(
-                    {"scene": str(scene), **diagnostics}
-                )
 
         if self.test_cfg.get("save_input_images", False):
             for idx, color in zip(inputs["frame_ids"][0], inputs["images"][0]):
@@ -1111,10 +1090,8 @@ class GlobalSplatModule(pl.LightningModule):
                     "scene_count": len(stage_rows),
                     "spatial_stages": config.score_spatial_stages,
                     "spatial_kernel": config.score_spatial_kernel,
-                    "context_quantization": config.score_context_quantization,
                     "token_order": config.token_order,
                     "context_schedule": config.score_context_schedule,
-                    "score_order_scale": config.score_order_scale,
                     "stage_order": stages,
                     "total_entropy_bytes": totals,
                     "mean_entropy_bytes": {name: size / len(stage_rows) for name, size in totals.items()},
@@ -1122,122 +1099,6 @@ class GlobalSplatModule(pl.LightningModule):
                 }
                 with (out_dir / "score_stage_summary.json").open("w") as f:
                     json.dump(stage_summary, f, indent=2)
-
-        if self.score_context_diagnostic_records:
-            with (out_dir / "score_context_b_per_scene.json").open("w") as f:
-                json.dump(self.score_context_diagnostic_records, f)
-
-            def summarize_vectors(vectors):
-                channels = len(vectors[0])
-                return {
-                    "mean": [
-                        sum(float(row[c]) for row in vectors) / len(vectors)
-                        for c in range(channels)
-                    ],
-                    "min": [min(float(row[c]) for row in vectors) for c in range(channels)],
-                    "max": [max(float(row[c]) for row in vectors) for c in range(channels)],
-                }
-
-            def summarize_effective_b(name):
-                rows = [record[name] for record in self.score_context_diagnostic_records]
-                channels = len(rows[0]["count"])
-                counts = [sum(int(row["count"][c]) for row in rows) for c in range(channels)]
-                sums = [sum(float(row["sum"][c]) for row in rows) for c in range(channels)]
-                sum_squares = [
-                    sum(float(row["sum_squares"][c]) for row in rows)
-                    for c in range(channels)
-                ]
-                sum_abs = [
-                    sum(float(row["sum_abs"][c]) for row in rows)
-                    for c in range(channels)
-                ]
-                means = [sums[c] / counts[c] for c in range(channels)]
-                stds = [
-                    max(0.0, sum_squares[c] / counts[c] - means[c] ** 2) ** 0.5
-                    for c in range(channels)
-                ]
-                return {
-                    "count": counts,
-                    "mean": means,
-                    "mean_abs": [sum_abs[c] / counts[c] for c in range(channels)],
-                    "rms": [(sum_squares[c] / counts[c]) ** 0.5 for c in range(channels)],
-                    "std": stds,
-                    "min": [min(float(row["min"][c]) for row in rows) for c in range(channels)],
-                    "max": [max(float(row["max"][c]) for row in rows) for c in range(channels)],
-                }
-
-            diagnostic_summary = {
-                "scene_count": len(self.score_context_diagnostic_records),
-                "channel_order": list(range(len(self.score_context_diagnostic_records[0]["mean_offset_b"]))),
-                "mean_offset_b": summarize_vectors(
-                    [record["mean_offset_b"] for record in self.score_context_diagnostic_records]
-                ),
-                "quantization_step_d": summarize_vectors(
-                    [record["quantization_step_d"] for record in self.score_context_diagnostic_records]
-                ),
-                "effective_b_even": summarize_effective_b("effective_b_even"),
-                "effective_b_odd": summarize_effective_b("effective_b_odd"),
-            }
-            for parity in ("even", "odd"):
-                for value in (
-                    "score", "mean_centered_score", "centered_score", "entropy_input"
-                ):
-                    name = f"{value}_{parity}"
-                    diagnostic_summary[name] = summarize_effective_b(name)
-
-            def pooled_magnitudes(name):
-                stats = diagnostic_summary[name]
-                total = sum(stats["count"])
-                mean_abs = sum(
-                    count * value
-                    for count, value in zip(stats["count"], stats["mean_abs"])
-                ) / total
-                rms = (
-                    sum(
-                        count * value * value
-                        for count, value in zip(stats["count"], stats["rms"])
-                    ) / total
-                ) ** 0.5
-                return mean_abs, rms
-
-            diagnostic_summary["prediction_gain"] = {}
-            for parity in ("even", "odd"):
-                score_mae, score_rms = pooled_magnitudes(f"score_{parity}")
-                mean_only_mae, mean_only_rms = pooled_magnitudes(
-                    f"mean_centered_score_{parity}"
-                )
-                residual_mae, residual_rms = pooled_magnitudes(
-                    f"centered_score_{parity}"
-                )
-                symbol_mae, symbol_rms = pooled_magnitudes(
-                    f"entropy_input_{parity}"
-                )
-                diagnostic_summary["prediction_gain"][parity] = {
-                    "score_mae": score_mae,
-                    "mean_only_mae": mean_only_mae,
-                    "centered_mae": residual_mae,
-                    "entropy_input_mae": symbol_mae,
-                    "score_rms": score_rms,
-                    "mean_only_rms": mean_only_rms,
-                    "centered_rms": residual_rms,
-                    "entropy_input_rms": symbol_rms,
-                    "mean_only_mae_reduction": 1.0 - mean_only_mae / score_mae if score_mae else None,
-                    "mean_only_rms_reduction": 1.0 - mean_only_rms / score_rms if score_rms else None,
-                    "mae_reduction": 1.0 - residual_mae / score_mae if score_mae else None,
-                    "rms_reduction": 1.0 - residual_rms / score_rms if score_rms else None,
-                }
-                gain = diagnostic_summary["prediction_gain"][parity]["mae_reduction"]
-                gain_text = f"{gain:.2%}" if gain is not None else "undefined"
-                print(
-                    f"score_context_{parity}: "
-                    f"|S|={score_mae:.6f}, |S-b_mean|={mean_only_mae:.6f}, "
-                    f"|S-b_full|={residual_mae:.6f}, "
-                    f"full MAE reduction={gain_text}, "
-                    f"RMS S={score_rms:.6f}, RMS(S-b_full)={residual_rms:.6f}"
-                )
-            with (out_dir / "score_context_b_summary.json").open("w") as f:
-                json.dump(diagnostic_summary, f, indent=2)
-            print(f"score_context_b_summary: {out_dir / 'score_context_b_summary.json'}")
 
         if "scene_count" not in saved:
             if self.test_step_outputs.get("psnr"):

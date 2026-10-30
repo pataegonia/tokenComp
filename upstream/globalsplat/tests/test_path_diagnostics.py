@@ -32,16 +32,14 @@ def make_codec():
     torch.manual_seed(903)
     config = CodecConfig(texture_channels=8, geometry_channels=8, geometry_observable_channels=4,
         rank=7, residual_n=6, residual_m=8, adapter_hidden=6, score_slice_channels=3,
-        score_context_hidden=5, score_spatial_stages=4, score_context_schedule="dyadic4",
-        score_spatial_kernel=5, score_context_quantization="ste", token_order="hilbert",
-        use_centering=False, use_score_norm=False, transform="linear",
-        score_mean_condition=False, score_channel_context=False)
+        score_spatial_stages=4, score_context_schedule="dyadic4",
+        score_spatial_kernel=5, token_order="hilbert")
     codec = ObservableLowRank1DCodec(config).eval()
     with torch.no_grad():
         # Nontrivial normalizers ensure bypasses preserve the deployed scaling.
         codec.residual_mean.uniform_(-0.3, 0.3)
         codec.residual_std.uniform_(0.4, 1.8)
-        for entropy in codec.score_context.active_entropies(codec.score_entropy):
+        for entropy in codec.score_context.active_entropies():
             entropy.entropy_bottleneck.quantiles[:, 0, 1].fill_(0.31)
     codec.update(force=True, update_quantiles=False)
     return codec
@@ -87,7 +85,7 @@ class DiagnosticPathTests(unittest.TestCase):
                 self.assertTrue(torch.equal(result.features["actual_packet"], torch.cat(codec.decompress(packet.data), -1)))
                 packed = SceneBitstream.unpack(packet.data)
                 with torch.autocast("cpu", enabled=False):
-                    shat = codec.score_context.decompress(packed.score, torch.zeros(1, 12), 65, codec.score_entropy)
+                    shat = codec.score_context.decompress(packed.score, 65)
                 lr = codec._synthesize_low_rank(shat.squeeze(2).transpose(1, 2))
                 self.assertTrue(torch.equal(lr, result.features["lr_decoded"]))
                 original = packet.order.apply(codec._pack_features(inputs[0], inputs[1]))
@@ -132,14 +130,14 @@ class DiagnosticPathTests(unittest.TestCase):
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         self.assertFalse(torch.equal(actual, residual))
 
-    def test_rejects_nonminimal_or_training_codec(self):
+    def test_rejects_single_path_or_training_codec(self):
         codec = make_codec()
         codec.train()
         with self.assertRaisesRegex(ValueError, "eval"):
             paths.validate_codec(codec)
         codec.eval()
-        codec.config = replace(codec.config, use_centering=True)
-        with self.assertRaisesRegex(ValueError, "minimal"):
+        codec.config = replace(codec.config, codec_mode="score_only", use_residual=False)
+        with self.assertRaisesRegex(ValueError, "two-path"):
             paths.validate_codec(codec)
 
 

@@ -68,10 +68,9 @@ def test_new_selector_may_be_missing_from_a_weights_only_initializer():
 
 def small_model(codec_order="hilbert", **selection):
     codec = dict(geometry_observable_channels=4, rank=4, residual_n=8, residual_m=12, adapter_hidden=6,
-                 score_slice_channels=2, score_context_hidden=8, transform_hidden=8, token_order=codec_order,
-                 use_centering=False, use_score_norm=False, transform="linear", score_mean_condition=False,
-                 score_channel_context=False, score_context_schedule="dyadic4", score_spatial_stages=4,
-                 score_spatial_kernel=5, score_context_quantization="ste")
+                 score_slice_channels=2, token_order=codec_order,
+                 score_context_schedule="dyadic4", score_spatial_stages=4,
+                 score_spatial_kernel=5)
     return GlobalSplat(static_only=True, dim_latents=16, latent_rep_token_amount=32, dim_rays=8, dim_rgb_feat=8,
                        rounds=1, slot_calib_layers_per_round=1, num_heads=2, M_max=2, feature_codec=codec,
                        freeze_globalsplat=True, token_selection=dict(minimum=8, **selection))

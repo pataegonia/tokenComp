@@ -17,11 +17,10 @@ from globalsplat.compression.checkpoint import infer_config, load_feature_codec_
 def small(mode):
     return CodecConfig(texture_channels=8, geometry_channels=8, geometry_observable_channels=4,
                        rank=0 if mode == "msh_only" else 4, residual_n=6, residual_m=8, adapter_hidden=6,
-                       codec_mode=mode, use_residual=mode != "score_only", use_centering=False,
-                       use_score_norm=False, transform="linear", score_mean_condition=False,
-                       score_channel_context=False, score_spatial_context=mode != "msh_only",
+                       codec_mode=mode, use_residual=mode != "score_only",
+                       score_spatial_context=mode != "msh_only",
                        score_context_schedule="dyadic4", score_spatial_stages=4, score_spatial_kernel=5,
-                       score_context_quantization="ste", score_slice_channels=2, token_order="hilbert")
+                       score_slice_channels=2, token_order="hilbert")
 
 
 class ArchitectureCodecTests(unittest.TestCase):

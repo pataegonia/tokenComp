@@ -151,14 +151,15 @@ def test_full_codec_has_all_likelihoods_and_roundtrips_bitstream():
         training=False,
     )
     assert set(output.likelihoods) == {"score", "residual_y", "residual_z"}
-    inferred = infer_config(codec.state_dict())
+    inferred = infer_config(codec.state_dict(), codec.config.to_dict())
     assert inferred.rank == 3
     assert inferred.observable_channels == 12
 
     codec.update(force=True)
     compressed = codec.compress(appearance, geometry, positions)
     scene = SceneBitstream.unpack(compressed.data)
-    assert scene.flags == codec.FLAGS
+    assert scene.flags == codec.flags
+    assert scene.mean_fp16 == b""
     assert scene.residual
     texture_hat, geometry_hat = codec.decompress(compressed.data)
     reconstructed = torch.cat((texture_hat, geometry_hat), dim=-1)
@@ -303,12 +304,11 @@ def test_statistics_artifact_loads_every_codec_initialization_tensor():
 
     count, keys = load_codec_initialization(codec, artifact)
 
-    assert count == 6
+    assert count == 5
     assert keys == [
         "geometry_projection.weight",
         "residual_mean",
         "residual_std",
-        "score_log_scale",
         "shared_basis",
         "shared_synthesis_basis",
     ]
@@ -317,7 +317,6 @@ def test_statistics_artifact_loads_every_codec_initialization_tensor():
     )
     torch.testing.assert_close(codec.shared_basis, artifact["shared_basis"])
     torch.testing.assert_close(codec.shared_synthesis_basis, artifact["shared_basis"])
-    torch.testing.assert_close(codec.score_scale, artifact["score_scale"])
     torch.testing.assert_close(codec.residual_mean.flatten(), artifact["residual_mean"])
     torch.testing.assert_close(codec.residual_std.flatten(), artifact["residual_std"])
 

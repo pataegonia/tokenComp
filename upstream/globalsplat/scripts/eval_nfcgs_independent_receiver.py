@@ -27,7 +27,7 @@ import eval_nfcgs_path_diagnostics as diag
 from globalsplat.compression import CodecConfig, ObservableLowRank1DCodec
 from globalsplat.compression.bitstream import SceneBitstream
 from globalsplat.compression.checkpoint import (
-    resize_registered_buffers, validate_feature_codec_checkpoint, validate_score_mean_offset_mode,
+    check_retired_metadata, resize_registered_buffers, strip_retired_state, validate_feature_codec_checkpoint,
 )
 from globalsplat.model.decoder.gaussian_decoder import TokenCoarseToFine3DGS
 from globalsplat.model.types import Gaussians
@@ -251,13 +251,11 @@ def load_receiver(checkpoint_path, meta, device):
     if tuple(bank.shape) != (meta["protocol"]["tokens"], config.geometry_channels):
         raise ValueError("checkpoint scene-token dimensions mismatch")
     receiver = PacketReceiver(config, meta["decoder"])
-    mode = checkpoint.get("score_mean_offset_enabled", True)
-    if mode != meta["protocol"]["score_mean_offset_enabled"]:
-        raise ValueError("receiver mean-offset setting differs from T05")
-    receiver.codec.score_context.mean_offset_enabled = mode
-    validate_score_mean_offset_mode(checkpoint, receiver.codec)
+    if meta["protocol"].get("score_mean_offset_enabled", True) is not True:
+        raise ValueError("T05 used the retired no-mean-offset setting")
+    check_retired_metadata(checkpoint)
     for module, prefix in ((receiver.codec, "model.feature_codec."), (receiver.gaussian_decoder, "model.gaussian_decoder.")):
-        selected = {k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}
+        selected = strip_retired_state({k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)})
         resize_registered_buffers(module, selected)
         module.load_state_dict(selected, strict=True)
     del checkpoint, state, bank, selected

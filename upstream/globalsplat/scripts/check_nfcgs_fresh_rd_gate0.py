@@ -27,7 +27,8 @@ def check_initializers(preparation):
     import torch
     from globalsplat.compression.architecture import tensor_hash
     from globalsplat.compression.codec import ObservableLowRank1DCodec
-    from globalsplat.compression.checkpoint import convert_score_path_state, resize_registered_buffers, validate_feature_codec_checkpoint
+    from globalsplat.compression.checkpoint import (convert_score_path_state, resize_registered_buffers,
+                                                    strip_retired_state, validate_feature_codec_checkpoint)
     manifest = read_json(preparation / "preparation.json")
     result = {}
     common = {}
@@ -42,7 +43,7 @@ def check_initializers(preparation):
         validate_feature_codec_checkpoint(saved, cfg, allow_score_path_conversion=converts_initializer(name))
         torch.manual_seed(manifest["seed"])
         codec = ObservableLowRank1DCodec(cfg)
-        source = saved["state_dict"]
+        source = strip_retired_state(saved["state_dict"])
         converted = convert_score_path_state(source, codec) if cell.arm == "two_path56" else source
         prefix = "model.feature_codec."
         state = {k[len(prefix):]: v for k, v in converted.items() if k.startswith(prefix)}
@@ -75,7 +76,7 @@ def load_integrated(path, dataset_root, workers=4):
     from omegaconf import OmegaConf
     from globalsplat.main import build_model
     from globalsplat.compression import CodecConfig, resize_registered_buffers
-    from globalsplat.compression.checkpoint import validate_feature_codec_checkpoint
+    from globalsplat.compression.checkpoint import strip_retired_state, validate_feature_codec_checkpoint
     saved = torch.load(path, map_location="cpu", weights_only=False)
     config = CodecConfig.from_mapping(saved["feature_codec_config"])
     validate_feature_codec_checkpoint(saved, config)
@@ -92,7 +93,7 @@ def load_integrated(path, dataset_root, workers=4):
     cfg.optimizer.num_workers = workers
     cfg.optimizer.batch_size = 1
     model = build_model(cfg.model)
-    state = {k[len("model."):]: v for k, v in saved["state_dict"].items() if k.startswith("model.")}
+    state = {k[len("model."):]: v for k, v in strip_retired_state(saved["state_dict"]).items() if k.startswith("model.")}
     resize_registered_buffers(model, state)
     model.load_state_dict(state, strict=True)
     model.eval().requires_grad_(False).set_stage(3, mix=1.)
@@ -104,19 +105,17 @@ def compare_codec(codec, texture, geometry, positions):
     """Keep both paths under their caller's production autocast policy."""
     import torch
     from globalsplat.compression.bitstream import ResidualBitstream, SceneBitstream
-    features, order, mean = codec._ordered_features(codec._pack_features(texture, geometry), positions)
-    mean = codec._scene_mean(features) if mean is None else mean
-    centered = features - mean[:, None, :]
-    score = codec._analyze_low_rank(centered) / codec.score_scale[None, None, :]
+    features, order = codec._ordered_features(codec._pack_features(texture, geometry), positions)
+    score = codec._analyze_low_rank(features)
     score = score.transpose(1, 2).unsqueeze(2)
-    f_score, _ = codec._score_forward(score, mean, training=False)
+    f_score, _ = codec._score_forward(score, training=False)
     packet = codec.compress(texture, geometry, positions)
     scene = SceneBitstream.unpack(packet.data)
     with torch.autocast(device_type=texture.device.type, enabled=False):
-        d_score = codec.score_context.decompress(scene.score, mean.float(), scene.points, codec.score_entropy)
-    f_lr = codec._synthesize_low_rank(f_score.squeeze(2).transpose(1, 2) * codec.score_scale[None, None, :])
-    d_lr = codec._synthesize_low_rank(d_score.squeeze(2).transpose(1, 2) * codec.score_scale[None, None, :])
-    f_residual, d_residual = centered - f_lr, centered - d_lr
+        d_score = codec.score_context.decompress(scene.score, scene.points)
+    f_lr = codec._synthesize_low_rank(f_score.squeeze(2).transpose(1, 2))
+    d_lr = codec._synthesize_low_rank(d_score.squeeze(2).transpose(1, 2))
+    f_residual, d_residual = features - f_lr, features - d_lr
     normalized = (f_residual.transpose(1, 2).unsqueeze(2) - codec.residual_mean) / codec.residual_std.clamp_min(1e-8)
     output = codec.residual_codec(normalized, training=False)
     packed = ResidualBitstream.unpack(scene.residual)
@@ -124,7 +123,7 @@ def compare_codec(codec, texture, geometry, positions):
     z_hat = msh.entropy_bottleneck.decompress(list(packed.z_strings), packed.z_shape)
     scales, means = msh._parameters_from_z(z_hat, packed.y_shape)
     y_hat = msh.gaussian_conditional.decompress(list(packed.y_strings), msh.gaussian_conditional.build_indexes(scales), means=means)
-    f_features, _ = codec._analyze_sorted(features, training=False, scene_mean=mean)
+    f_features, _ = codec._analyze_sorted(features, training=False)
     d_texture, d_geometry = codec.decompress(packet.data)
     d_features = torch.cat((d_texture, d_geometry), dim=-1)
     actual_forward = codec(texture, geometry, positions, restore_original_order=False, training=False).reconstruction_sorted

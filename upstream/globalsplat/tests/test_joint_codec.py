@@ -26,9 +26,7 @@ def test_scratch_gradients_reach_encoder_codec_and_decoder():
             residual_n=6,
             residual_m=8,
             adapter_hidden=6,
-            transform_hidden=8,
             score_slice_channels=2,
-            score_context_hidden=8,
         ),
     ).train()
     model.set_stage(0)

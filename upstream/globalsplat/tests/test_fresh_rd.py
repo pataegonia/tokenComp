@@ -115,8 +115,7 @@ def test_direct_mse_and_paired_gate():
 def test_real_entropy_roundtrip_and_forward(cell):
     from globalsplat.compression.codec import ObservableLowRank1DCodec
     cfg=replace(runner.config_for(cell),texture_channels=8,geometry_channels=8,geometry_observable_channels=4,
-        rank=0 if CELLS[cell].arm=="msh_only" else 4,residual_n=8,residual_m=12,adapter_hidden=6,score_slice_channels=2,
-        score_context_hidden=8,transform_hidden=8)
+        rank=0 if CELLS[cell].arm=="msh_only" else 4,residual_n=8,residual_m=12,adapter_hidden=6,score_slice_channels=2)
     torch.manual_seed(123)
     codec=ObservableLowRank1DCodec(cfg).eval()
     codec.update(force=True)
@@ -137,8 +136,7 @@ def test_initializer_load_and_hashes_all_cells(tmp_path):
     original=runner.config_for
     def small(cell):
         return replace(original(cell),texture_channels=8,geometry_channels=8,geometry_observable_channels=4,
-            rank=0 if CELLS[cell].arm=="msh_only" else 4,residual_n=8,residual_m=12,adapter_hidden=6,score_slice_channels=2,
-            score_context_hidden=8,transform_hidden=8)
+            rank=0 if CELLS[cell].arm=="msh_only" else 4,residual_n=8,residual_m=12,adapter_hidden=6,score_slice_channels=2)
     common=None;arms={}
     for cell in ("h_on","s56","msh"):
         torch.manual_seed(111123)
@@ -166,7 +164,7 @@ def test_new_cells_convert_only_switches_of_their_initializer():
     def small(cell):
         return replace(runner.config_for(cell),texture_channels=8,geometry_channels=8,geometry_observable_channels=4,
             rank=0 if CELLS[cell].arm=="msh_only" else 4,residual_n=8,residual_m=12,adapter_hidden=6,
-            score_slice_channels=2,score_context_hidden=8,transform_hidden=8)
+            score_slice_channels=2)
     for base,variants in (("s56",("s56_off","s56_n_on","s56_n_off")),("msh",("msh_n",))):
         codec=ObservableLowRank1DCodec(small(base))
         saved=dict(state_dict={"model.feature_codec."+k:v for k,v in codec.state_dict().items()},
@@ -191,7 +189,7 @@ def test_gate0_integrated_loader_keeps_encoder_width(tmp_path):
     from globalsplat.compression.config import CodecConfig
     import globalsplat.main as main
     cfg=replace(runner.config_for("h_on"),texture_channels=8,geometry_channels=8,geometry_observable_channels=4,
-        rank=4,residual_n=8,residual_m=12,adapter_hidden=6,score_slice_channels=2,score_context_hidden=8,transform_hidden=8)
+        rank=4,residual_n=8,residual_m=12,adapter_hidden=6,score_slice_channels=2)
     codec=ObservableLowRank1DCodec(cfg)
     path=tmp_path/"initial.ckpt"
     torch.save(dict(state_dict={"model.feature_codec."+k:v for k,v in codec.state_dict().items()},feature_codec_config=cfg.to_dict()),path)

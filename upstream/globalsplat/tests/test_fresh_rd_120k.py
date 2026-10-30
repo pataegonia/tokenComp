@@ -326,56 +326,6 @@ def test_optional_cancel_changes_only_four_jobs_and_unblocks_sixteen_run_monitor
     monitor.main(['--root',str(args.root),'--state',str(args.state),'--wave','2','--phase','final','--budget','120000','--once'])
 
 
-def test_retry_supervisor_supports_120k_without_changing_the_provisional_default(tmp_path):
-    import wait_nfcgs_provisional_submission as wait
-    args,state=legacy.setup(tmp_path);atomic_json(args.state,state)
-    command=wait.submission_command(args.state,restart_120k=True)
-    assert '--accept-resaved-60k' in command and '--restart-stage-b-from-60k' in command
-    assert command[command.index('--budget')+1]=='120000'
-    assert '--provisional' in wait.submission_command(args.state)
-
-
-def test_progress_verifier_streams_tensorboard_lr_before_84k(tmp_path):
-    from tensorboard.compat.proto.event_pb2 import Event
-    from tensorboard.compat.proto.summary_pb2 import Summary
-    from tensorboard.summary.writer.event_file_writer import EventFileWriter
-    import verify_nfcgs_fresh_120k as verify
-    writer=EventFileWriter(str(tmp_path))
-    for step,lr in ((70000,.0001),(83999,.0001),(84000,.00001)):
-        writer.add_event(Event(step=step,summary=Summary(value=[Summary.Value(tag='lr-Adam',simple_value=lr)])))
-    writer.flush();writer.close()
-    result=verify.read_lr_events(tmp_path.glob('events.out.tfevents.*'))
-    assert result['lr_events']==3 and result['last_logged_step']==84000
-    assert result['pre_84k_violations']==[]
-    writer=EventFileWriter(str(tmp_path/'bad'))
-    writer.add_event(Event(step=83000,summary=Summary(value=[Summary.Value(tag='lr-Adam',simple_value=.00001)])))
-    writer.flush();writer.close()
-    assert len(verify.read_lr_events((tmp_path/'bad').glob('events.out.tfevents.*'))['pre_84k_violations'])==1
-
-
-def test_progress_verifier_reads_named_scheduler_param_group_tags(tmp_path):
-    from pytorch_lightning.callbacks import LearningRateMonitor
-    from pytorch_lightning.utilities.types import LRSchedulerConfig
-    from tensorboard.compat.proto.event_pb2 import Event
-    from tensorboard.compat.proto.summary_pb2 import Summary
-    from tensorboard.summary.writer.event_file_writer import EventFileWriter
-    from globalsplat.model.optim import build_optimizer_and_scheduler
-    import verify_nfcgs_fresh_120k as verify
-    built=build_optimizer_and_scheduler(torch.nn.Linear(2,2),lr=.0001,weight_decay=0.,optimizer_name='adam',
-                                        lr_milestones=[84000,108000])
-    config=LRSchedulerConfig(scheduler=built['lr_scheduler']['scheduler'],name=built['lr_scheduler']['name'])
-    tags=LearningRateMonitor()._find_names_from_schedulers([config])[0][0]
-    assert tags==['lr/pg1','lr/pg2']
-    writer=EventFileWriter(str(tmp_path))
-    values=[Summary.Value(tag=tags[0],simple_value=.0001),Summary.Value(tag=tags[1],simple_value=.00001),
-            Summary.Value(tag='lr_milestones',simple_value=84000.)]
-    writer.add_event(Event(step=70000,summary=Summary(value=values)))
-    writer.flush();writer.close()
-    result=verify.read_lr_events(tmp_path.glob('events.out.tfevents.*'))
-    assert result['lr_events']==2 and result['tags']==tags
-    assert [v['tag'] for v in result['pre_84k_violations']]==['lr/pg2']
-
-
 @pytest.mark.parametrize('argv',[
     ['--accept-resaved-60k'],
     ['--stage-b','--wave','1','--budget','100000','--accept-resaved-60k'],

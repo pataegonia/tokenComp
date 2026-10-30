@@ -12,15 +12,14 @@ from globalsplat.compression.checkpoint import (
     convert_score_path_state, infer_config, load_feature_codec_checkpoint,
     resize_registered_buffers, validate_feature_codec_checkpoint,
 )
-from globalsplat.compression.entropy import FactorizedScoreEntropy
 from globalsplat.compression.score_context import ContextualScoreEntropy
-from test_score_path_ablation import config, MINIMAL
+from codec_helpers import config
 
 
 def arm(schedule):
-    values=config(**MINIMAL,token_order="hilbert",score_spatial_context=False,
+    values=config(token_order="hilbert",score_spatial_context=False,
         score_context_schedule=schedule,score_spatial_stages=1 if schedule=="single" else 4,
-        score_spatial_kernel=5,score_context_quantization="ste").to_dict()
+        score_spatial_kernel=5).to_dict()
     values["score_slice_channels"]=values["rank"]
     return ObservableLowRank1DCodec(CodecConfig.from_mapping(values))
 
@@ -32,7 +31,7 @@ class ContextOffBlockTests(unittest.TestCase):
 
     def test_invalid_single_schedule_context_and_metadata_are_rejected(self):
         good=arm("single").config
-        for values in (dict(score_spatial_context=True),dict(score_channel_context=True),
+        for values in (dict(score_spatial_context=True),
                        dict(score_spatial_stages=2),dict(score_context_schedule="legacy")):
             with self.subTest(values=values),self.assertRaises(ValueError):
                 replace(good,**values)
@@ -45,35 +44,32 @@ class ContextOffBlockTests(unittest.TestCase):
             infer_config(wrong,codec.config.to_dict())
         wrong=dict(state)
         del wrong["score_context.single_block_marker"]
-        with self.assertRaisesRegex(ValueError,"configuration mismatch"):
+        with self.assertRaisesRegex(ValueError,"state mismatch"):
             infer_config(wrong,codec.config.to_dict())
 
     def test_actual_rank56_streams_are_one_or_four_and_no_predictor_executes(self):
         for schedule,stages,count in (("single",1,1),("dyadic4",4,4)):
             with self.subTest(schedule=schedule),torch.no_grad():
-                context=ContextualScoreEntropy(rank=56,scene_channels=736,slice_channels=56,hidden=64,
-                    mean_condition=False,channel_context=False,spatial_context=False,spatial_stages=stages,
-                    spatial_kernel=5,context_quantization="ste",context_schedule=schedule).eval()
-                base=FactorizedScoreEntropy(56)
-                context.update(base,force=True)
+                context=ContextualScoreEntropy(rank=56,slice_channels=56,spatial_context=False,
+                    spatial_stages=stages,spatial_kernel=5,context_schedule=schedule).eval()
+                context.update(force=True)
                 def fail(*args):
                     raise AssertionError("Context OFF predictor executed")
                 handles=[]
-                for name in ("mean_conditioner","channel_predictors","spatial_predictors",
-                             "split_even_predictors","split_odd_predictors","anchor_predictors"):
+                for name in ("spatial_predictors","split_even_predictors","split_odd_predictors",
+                             "anchor_predictors"):
                     module=getattr(context,name,None)
                     if module is not None:
                         for child in module.modules():
                             handles.append(child.register_forward_pre_hook(fail))
                 score=torch.randn(1,56,1,4096)
-                mean=torch.zeros(1,736)
                 try:
-                    packet,hat=context.compress(score,mean,base)
-                    received=context.decompress(packet,mean,4096,base)
-                    forward,likelihood=context(score,mean,base,training=False)
+                    packet,hat=context.compress(score)
+                    received=context.decompress(packet,4096)
+                    forward,likelihood=context(score,training=False)
                     altered=score.clone()
                     altered[...,0]+=100
-                    other,other_likelihood=context(altered,mean,base,training=False)
+                    other,other_likelihood=context(altered,training=False)
                 finally:
                     for h in handles:
                         h.remove()
@@ -112,7 +108,7 @@ class ContextOffBlockTests(unittest.TestCase):
             for key,value in parent.state_dict().items():
                 if not key.startswith("score_context."):
                     torch.testing.assert_close(state[key],value,rtol=0,atol=0)
-            for entropy in codec.score_context.active_entropies(codec.score_entropy):
+            for entropy in codec.score_context.active_entropies():
                 for name,parameter in entropy.named_parameters():
                     expected=torch.cat([dict(e.named_parameters())[name] for e in parent.score_context.group_entropies],0)
                     torch.testing.assert_close(parameter,expected,rtol=0,atol=0)
@@ -134,7 +130,7 @@ class ContextOffBlockTests(unittest.TestCase):
             (trained.reconstruction_sorted.square().mean()+trained.estimated_bits/10000+codec.aux_loss()).backward()
             self.assertIsNotNone(codec.shared_basis.grad)
             self.assertTrue(any(p.grad is not None for p in codec.residual_codec.parameters()))
-            active={id(p) for e in codec.score_context.active_entropies(codec.score_entropy) for p in e.parameters()}
+            active={id(p) for e in codec.score_context.active_entropies() for p in e.parameters()}
             for name,p in codec.score_context.named_parameters():
                 if "predictors." in name or ("entropies." in name and id(p) not in active):
                     self.assertFalse(p.requires_grad,name)

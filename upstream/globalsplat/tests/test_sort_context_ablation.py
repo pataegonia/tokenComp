@@ -13,17 +13,16 @@ from globalsplat.compression.checkpoint import (
     convert_score_path_state, load_feature_codec_checkpoint,
     resize_registered_buffers, validate_feature_codec_checkpoint,
 )
-from test_score_path_ablation import config, MINIMAL
+from codec_helpers import config
 
 
 def ablation(order="none", context=True, stages=3, schedule="legacy"):
     if schedule != "legacy":
         stages = 2 if schedule == "quarter2" else 4
     return ObservableLowRank1DCodec(config(
-        **MINIMAL, token_order=order, score_spatial_context=context,
+        token_order=order, score_spatial_context=context,
         score_context_schedule=schedule,
         score_spatial_stages=stages, score_spatial_kernel=5,
-        score_context_quantization="ste",
     ))
 
 
@@ -69,7 +68,6 @@ class SortContextAblationTests(unittest.TestCase):
                 scores = torch.randn(1, codec.config.rank, 1, 65, requires_grad=True)
                 altered = scores.detach().clone()
                 altered[..., 0] += 100
-                mean = torch.zeros(1, codec.config.observable_channels)
                 # Hooks fail if even a frozen predictor is accidentally evaluated.
                 def fail(*args):
                     raise AssertionError("disabled spatial predictor ran")
@@ -77,8 +75,8 @@ class SortContextAblationTests(unittest.TestCase):
                            for name in ("spatial_predictors", "split_even_predictors")
                            for module in getattr(context, name, ())]
                 try:
-                    reconstructed, likelihood = codec._score_forward(scores, mean, training=False)
-                    other, other_likelihood = codec._score_forward(altered, mean, training=False)
+                    reconstructed, likelihood = codec._score_forward(scores, training=False)
+                    other, other_likelihood = codec._score_forward(altered, training=False)
                 finally:
                     for handle in handles:
                         handle.remove()
@@ -88,7 +86,7 @@ class SortContextAblationTests(unittest.TestCase):
                 loss.backward()
                 self.assertIsNotNone(scores.grad)
                 self.assertTrue(all(parameter.grad is None for parameter in predictors))
-                self.assertTrue(any(parameter.grad is not None for entropy in context.active_entropies(codec.score_entropy)
+                self.assertTrue(any(parameter.grad is not None for entropy in context.active_entropies()
                                     for parameter in entropy.parameters() if parameter.requires_grad))
                 codec.set_trainable_scope("all")
                 self.assertTrue(all(not parameter.requires_grad for parameter in predictors))
@@ -121,8 +119,6 @@ class SortContextAblationTests(unittest.TestCase):
         self.assertEqual(scene.mean_fp16, b"")
         self.assertTrue(scene.residual)
         self.assertFalse(score.flags & codec.score_context.FLAG_SPATIAL)
-        self.assertFalse(score.flags & codec.score_context.FLAG_MEAN)
-        self.assertFalse(score.flags & codec.score_context.FLAG_CHANNEL)
         self.assertEqual(len(score.strings), 3 * len(codec.score_context.group_sizes))
         output = codec(*inputs, training=False)
         decoded = torch.cat(codec.decompress(payload), -1)

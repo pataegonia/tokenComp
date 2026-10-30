@@ -1,4 +1,4 @@
-# Main codec: Nonlinear32 / rank56 / Morton+residual / Full P0 / Split.
+# Main codec: minimal linear rank56 / Hilbert + D4 Score context / 1-D residual hyperprior.
 name: globalsplat
 sh_degree: 3
 static_only: true
@@ -14,7 +14,6 @@ M_max: 16
 use_camera_diff_as_input: false
 freeze_globalsplat: true
 feature_codec_train_scope: all
-score_mean_offset_enabled: true
 
 feature_codec:
   geometry_observable_channels: 224
@@ -24,26 +23,14 @@ feature_codec:
   adapter_hidden: 96
   morton_bits: 10
   use_morton: true
-  token_order: morton  # none | morton | hilbert | nn_xyz | nn_score; none keeps original slots
-  score_order_scale: null  # nn_score: optional train-fitted rank-vector in quantization units
+  token_order: hilbert  # none | morton | hilbert | nn_xyz | nn_score; none keeps original slots
   score_order_metric: l1  # nn_score distance: l1 | l2 (Euclidean; graph backends use one GEMM)
   nn_order_backend: legacy  # legacy | row (visited vector) | knn (Numba + exact fallback) | graph (kNN lists + Hilbert jump; approximate) | graph_gemm (graph with L2-GEMM shortlist, L1 rerank)
   nn_order_candidates: 64
   nn_order_distance_device: cpu  # cpu | input (CUDA when input is CUDA); legacy requires cpu
   use_residual: true
-  use_centering: true
-  use_score_norm: true
-  transform: nonlinear
-  transform_hidden: 32
-  score_mean_condition: true
-  score_channel_context: true
   score_spatial_context: true  # false bypasses spatial predictors, retaining Split entropy models
-  score_spatial_predictor: linear
-  score_spatial_entropy: split
-  score_spatial_hidden: 32
   score_slice_channels: 16
-  score_context_hidden: 64
-  score_spatial_stages: 2
-  score_spatial_kernel: 3
-  score_context_quantization: noise
-  score_context_schedule: legacy  # legacy (existing 2/3/4) | quarter2 | dyadic4
+  score_spatial_stages: 4
+  score_spatial_kernel: 5
+  score_context_schedule: dyadic4  # legacy (existing 2/3/4) | quarter2 | dyadic4 | single

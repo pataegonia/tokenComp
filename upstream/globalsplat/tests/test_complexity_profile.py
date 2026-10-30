@@ -15,7 +15,7 @@ from unittest.mock import patch
 import torch
 
 from globalsplat.compression import ObservableLowRank1DCodec
-from test_score_path_ablation import config, MINIMAL
+from codec_helpers import config
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("profile_complexity", ROOT / "scripts/profile_nfcgs_complexity.py")
@@ -53,8 +53,7 @@ class ComplexityProfileTests(unittest.TestCase):
         torch.set_num_threads(1)
 
     def make(self, **extra):
-        return ObservableLowRank1DCodec(config(**MINIMAL, score_spatial_kernel=5,
-            score_context_quantization="ste", **extra)).eval()
+        return ObservableLowRank1DCodec(config(score_spatial_kernel=5, **extra)).eval()
 
     def test_registered_macs_count_functional_matmul_and_transposed_convolution(self):
         x, w = torch.randn(2, 4, 7), torch.randn(7, 3)

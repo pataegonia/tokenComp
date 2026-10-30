@@ -6,7 +6,6 @@ import torch
 from torch import Tensor, nn
 from .bitstream import SceneBitstream
 from .config import CodecConfig
-from .entropy import FactorizedScoreEntropy
 from .morton import MortonOrder, morton_order_3d
 from .residual import ResidualHyperprior1D
 from .score_context import ContextualScoreEntropy
@@ -43,15 +42,16 @@ class CompressedScene:
 
 
 class ObservableLowRank1DCodec(nn.Module):
-    """Nonlinear transform, Morton residual hyperprior, and Full P0+Split."""
+    """Linear rank-r Score path with contextual coding and a 1-D residual hyperprior."""
 
+    # FLAG_NONLINEAR belongs to the retired nonlinear transform. Every minimal
+    # stream sets FLAG_NO_CENTERING and FLAG_NO_SCORE_NORM.
     FLAG_NONLINEAR = 1 << 2
     FLAG_CONTEXTUAL_SCORE = 1 << 3
     FLAG_NO_CENTERING = 1 << 4
     FLAG_NO_SCORE_NORM = 1 << 5
     FLAG_SCORE_ONLY = 1 << 6
     FLAG_MSH_ONLY = 1 << 7
-    FLAGS = FLAG_NONLINEAR | FLAG_CONTEXTUAL_SCORE
 
     def __init__(self, config: CodecConfig) -> None:
         super().__init__()
@@ -63,78 +63,44 @@ class ObservableLowRank1DCodec(nn.Module):
             nn.init.orthogonal_(basis)
             self.shared_basis = nn.Parameter(basis)
             self.shared_synthesis_basis = nn.Parameter(basis.clone())
-            self.score_log_scale = nn.Parameter(torch.zeros(rank))
         else:
             self.register_parameter("shared_basis", None)
             self.register_parameter("shared_synthesis_basis", None)
-            self.register_parameter("score_log_scale", None)
         self.register_buffer("residual_mean", torch.zeros(1, channels, 1, 1) if config.use_residual else None)
         self.register_buffer("residual_std", torch.ones(1, channels, 1, 1) if config.use_residual else None)
         self.geometry_projection = nn.Linear(
             config.geometry_channels, config.geometry_observable_channels, bias=False
         )
-        # Frozen legacy tensors remain for strict checkpoint and optimizer-state
-        # compatibility. Actual coding uses score_context's even/odd models.
-        self.score_entropy = FactorizedScoreEntropy(rank) if rank else None
         self.residual_codec = ResidualHyperprior1D(
             channels,
             n=config.residual_n,
             m=config.residual_m,
             adapter_hidden=config.adapter_hidden,
         ) if config.use_residual else None
-        # Preserve initialization RNG boundaries from the reference codec.
-        with torch.random.fork_rng(devices=[]):
-            self.analysis_mlp = self._make_mlp(channels, rank, config.transform_hidden) if rank else None
-            self.synthesis_mlp = self._make_mlp(rank, channels, config.transform_hidden) if rank else None
         with torch.random.fork_rng(devices=[]):
             self.score_context = ContextualScoreEntropy(
                 rank=rank,
-                scene_channels=channels,
                 slice_channels=config.score_slice_channels,
-                hidden=config.score_context_hidden,
-                mean_condition=config.score_mean_condition,
-                channel_context=config.score_channel_context,
                 spatial_context=config.score_spatial_context,
                 spatial_stages=config.score_spatial_stages,
                 spatial_kernel=config.score_spatial_kernel,
-                context_quantization=config.score_context_quantization,
                 context_schedule=config.score_context_schedule,
             ) if rank else None
-        self._freeze_inactive_score_entropy()
-
-    @staticmethod
-    def _make_mlp(inputs: int, outputs: int, hidden: int) -> nn.Sequential:
-        mlp = nn.Sequential(
-            nn.Linear(inputs, hidden, bias=False),
-            nn.GELU(),
-            nn.Linear(hidden, outputs, bias=False),
-        )
-        nn.init.zeros_(mlp[-1].weight)
-        return mlp
+        self._freeze_inactive()
 
     @property
     def synthesis_basis(self) -> Tensor:
         return self.shared_synthesis_basis
 
     @property
-    def score_scale(self) -> Tensor:
-        if not self.config.use_score_norm:
-            return torch.ones_like(self.score_log_scale)
-        return torch.exp(self.score_log_scale).clamp_min(1e-08)
-
-    @property
     def flags(self) -> int:
-        flags = self.FLAG_CONTEXTUAL_SCORE if self.score_context is not None else 0
+        flags = self.FLAG_NO_CENTERING | self.FLAG_NO_SCORE_NORM
+        if self.score_context is not None:
+            flags |= self.FLAG_CONTEXTUAL_SCORE
         if self.config.codec_mode == "score_only":
             flags |= self.FLAG_SCORE_ONLY
         elif self.config.codec_mode == "msh_only":
             flags |= self.FLAG_MSH_ONLY
-        if self.config.transform == "nonlinear":
-            flags |= self.FLAG_NONLINEAR
-        if not self.config.use_centering:
-            flags |= self.FLAG_NO_CENTERING
-        if not self.config.use_score_norm:
-            flags |= self.FLAG_NO_SCORE_NORM
         return flags
 
     def project_geometry(self, geometry: Tensor) -> Tensor:
@@ -157,19 +123,17 @@ class ObservableLowRank1DCodec(nn.Module):
         return torch.cat([texture, observable], dim=-1)
 
     def _synthesize_low_rank(self, score: Tensor) -> Tensor:
-        value = score @ self.synthesis_basis
-        if self.config.transform == "nonlinear":
-            value = value + self.synthesis_mlp(score)
-        return value
+        return score @ self.synthesis_basis
 
-    def _analyze_low_rank(self, centered: Tensor) -> Tensor:
-        value = centered @ self.shared_basis.transpose(0, 1)
-        if self.config.transform == "nonlinear":
-            value = value + self.analysis_mlp(centered)
-        return value
+    def _analyze_low_rank(self, features: Tensor) -> Tensor:
+        return features @ self.shared_basis.transpose(0, 1)
 
-    def _make_order(self, positions: Tensor, features: Tensor | None = None,
-                    scene_mean: Tensor | None = None) -> MortonOrder:
+    @staticmethod
+    def _promote(value: Tensor, like: Tensor) -> Tensor:
+        """Widen to the dtype a zero scene mean of ``like`` used to impose."""
+        return value.to(torch.promote_types(value.dtype, like.dtype))
+
+    def _make_order(self, positions: Tensor, features: Tensor | None = None) -> MortonOrder:
         mode, bits = self.config.token_order, self.config.morton_bits
         if mode == "none":
             if positions.ndim != 3 or positions.shape[-1] != 3:
@@ -190,43 +154,21 @@ class ObservableLowRank1DCodec(nn.Module):
         # Use pre-context, pre-quantization scores. Only the permutation is
         # detached: the regular analysis/MSH pass below still receives gradients.
         with torch.no_grad(), torch.autocast(device_type=features.device.type, enabled=False):
-            mean = self._scene_mean(features.float()) if scene_mean is None else scene_mean.float()
-            score = self._analyze_low_rank(features.float() - mean[:, None, :])
-            score = score / self.score_scale[None, None, :]
-            _, step = self.score_context._scene_parameters(mean)
-            units = score / step[:, None, :]
-            if self.config.score_order_scale is None:
-                scale = units.abs().mean(dim=1, keepdim=True).clamp_min(.05)
-            else:
-                scale = units.new_tensor(self.config.score_order_scale)[None, None, :]
+            units = self._analyze_low_rank(features.float())
+            scale = units.abs().mean(dim=1, keepdim=True).clamp_min(.05)
             return greedy_neighbor_order(units / scale, positions, bits=bits,
                                          metric=self.config.score_order_metric, **nn_options)
 
-    def _ordered_features(self, features: Tensor, positions: Tensor):
-        # Compute the transmitted FP16 mean once, before value-dependent sorting.
-        # Legacy paths retain their original reduction order and output bytes.
-        mean = self._scene_mean(features) if self.config.token_order == "nn_score" else None
-        order = self._make_order(positions, features, mean)
-        return order.apply(features), order, mean
+    def _ordered_features(self, features: Tensor, positions: Tensor) -> tuple[Tensor, MortonOrder]:
+        order = self._make_order(positions, features)
+        return order.apply(features), order
 
-    def _freeze_inactive_score_entropy(self) -> None:
-        if self.score_entropy is None:
+    def _freeze_inactive(self) -> None:
+        if self.score_context is None:
             return
-        for parameter in self.score_entropy.parameters():
-            parameter.requires_grad_(False)
-        # Retain tensor keys for explicit weights-only warm starts, but inactive
-        # branches are bypassed and receive neither gradients nor optimizer slots.
-        if not self.config.use_score_norm:
-            self.score_log_scale.requires_grad_(False)
         modules = []
         if self.config.score_context_schedule == "single":
             modules.append(self.score_context.spatial_odd_entropies)
-        if self.config.transform == "linear":
-            modules.extend((self.analysis_mlp, self.synthesis_mlp))
-        if not self.config.score_mean_condition:
-            modules.append(self.score_context.mean_conditioner)
-        if not self.config.score_channel_context:
-            modules.append(self.score_context.channel_predictors)
         if not self.config.score_spatial_context:
             for name in ("spatial_predictors", "split_even_predictors", "split_odd_predictors", "anchor_predictors"):
                 module = getattr(self.score_context, name, None)
@@ -236,10 +178,10 @@ class ObservableLowRank1DCodec(nn.Module):
             module.requires_grad_(False)
 
     def set_trainable(self, trainable: bool = True) -> None:
-        """Set trainability while keeping compatibility-only entropy tensors frozen."""
+        """Set trainability while keeping compatibility-only tensors frozen."""
         for parameter in self.parameters():
             parameter.requires_grad_(trainable)
-        self._freeze_inactive_score_entropy()
+        self._freeze_inactive()
 
     def set_trainable_scope(self, scope: str = "all") -> None:
         """Train the full codec, or fit probability densities with fixed reconstruction."""
@@ -255,51 +197,34 @@ class ObservableLowRank1DCodec(nn.Module):
         for parameter in self.parameters():
             parameter.requires_grad_(False)
         # Quantiles define the reconstruction lattice and must stay fixed.
-        for entropy in self.score_context.active_entropies(self.score_entropy):
+        for entropy in self.score_context.active_entropies():
             for parameter in entropy.parameters():
                 parameter.requires_grad_(True)
             entropy.entropy_bottleneck.quantiles.requires_grad_(False)
 
     def _score_forward(
-        self, score_nchw: Tensor, mean: Tensor, *, training: bool | None
+        self, score_nchw: Tensor, *, training: bool | None
     ) -> tuple[Tensor, Tensor]:
         # Sender, receiver, and mixed-precision training must agree on context.
         with torch.autocast(device_type=score_nchw.device.type, enabled=False):
-            return self.score_context(
-                score_nchw.float(), mean.float(), self.score_entropy, training=training
-            )
-
-    @staticmethod
-    def _quantize_mean(mean: Tensor) -> Tensor:
-        """FP16 side-information quantizer with an STE during training."""
-        quantized = mean.to(torch.float16).to(mean.dtype)
-        if torch.is_grad_enabled():
-            return mean + (quantized - mean).detach()
-        return quantized
+            return self.score_context(score_nchw.float(), training=training)
 
     def _analyze_sorted(
         self, sorted_features: Tensor, *, training: bool | None = None,
-        scene_mean: Tensor | None = None,
     ) -> tuple[Tensor, dict[str, Tensor]]:
-        mean = self._scene_mean(sorted_features) if scene_mean is None else scene_mean
-        centered = sorted_features - mean[:, None, :]
         likelihoods = {}
         if self.score_context is not None:
-            score = self._analyze_low_rank(centered)
-            normalized_score = score / self.score_scale[None, None, :]
-            score_nchw = normalized_score.transpose(1, 2).unsqueeze(2)
-            score_hat_nchw, score_likelihood = self._score_forward(
-                score_nchw, mean, training=training
-            )
+            score = self._analyze_low_rank(sorted_features)
+            score_nchw = score.transpose(1, 2).unsqueeze(2)
+            score_hat_nchw, score_likelihood = self._score_forward(score_nchw, training=training)
             score_hat = score_hat_nchw.squeeze(2).transpose(1, 2)
-            score_hat = score_hat * self.score_scale[None, None, :]
             low_rank = self._synthesize_low_rank(score_hat)
             likelihoods["score"] = score_likelihood
         else:
-            low_rank = torch.zeros_like(centered)
+            low_rank = torch.zeros_like(sorted_features)
         if self.residual_codec is None:
-            return mean[:, None, :] + low_rank, likelihoods
-        residual = centered - low_rank
+            return self._promote(low_rank, sorted_features), likelihoods
+        residual = sorted_features - low_rank
         residual_nchw = residual.transpose(1, 2).unsqueeze(2)
         normalized_residual = (
             residual_nchw - self.residual_mean
@@ -310,13 +235,8 @@ class ObservableLowRank1DCodec(nn.Module):
         )
         residual_hat = residual_hat_nchw.squeeze(2).transpose(1, 2)
         likelihoods.update(residual_output.likelihoods)
-        reconstruction = mean[:, None, :] + low_rank + residual_hat
+        reconstruction = self._promote(low_rank, sorted_features) + residual_hat
         return (reconstruction, likelihoods)
-
-    def _scene_mean(self, features: Tensor) -> Tensor:
-        if not self.config.use_centering:
-            return features.new_zeros(features.shape[0], features.shape[-1])
-        return self._quantize_mean(features.mean(dim=1))
 
     def forward(
         self,
@@ -328,8 +248,8 @@ class ObservableLowRank1DCodec(nn.Module):
         training: bool | None = None,
     ) -> CodecOutput:
         features = self._pack_features(texture, geometry)
-        features, order, mean = self._ordered_features(features, positions)
-        reconstruction, likelihoods = self._analyze_sorted(features, training=training, scene_mean=mean)
+        features, order = self._ordered_features(features, positions)
+        reconstruction, likelihoods = self._analyze_sorted(features, training=training)
         split = reconstruction
         if restore_original_order:
             split = order.restore(split)
@@ -346,42 +266,29 @@ class ObservableLowRank1DCodec(nn.Module):
         if texture.shape[0] != 1:
             raise ValueError("the E2EM0301 scene container stores one scene at a time")
         features = self._pack_features(texture, geometry)
-        features, order, mean = self._ordered_features(features, positions)
-        mean = self._scene_mean(features) if mean is None else mean
-        centered = features - mean[:, None, :]
+        features, order = self._ordered_features(features, positions)
         score_payload = residual_payload = b""
         if self.score_context is not None:
-            score = self._analyze_low_rank(centered)
-            normalized = score / self.score_scale[None, None, :]
-            score_nchw = normalized.transpose(1, 2).unsqueeze(2)
+            score = self._analyze_low_rank(features)
+            score_nchw = score.transpose(1, 2).unsqueeze(2)
             with torch.autocast(device_type=score_nchw.device.type, enabled=False):
-                score_payload, score_hat_nchw = self.score_context.compress(
-                    score_nchw.float(), mean.float(), self.score_entropy
-                )
+                score_payload, score_hat_nchw = self.score_context.compress(score_nchw.float())
             score_hat = score_hat_nchw.squeeze(2).transpose(1, 2)
-            score_hat = score_hat * self.score_scale[None, None, :]
             low_rank = self._synthesize_low_rank(score_hat)
         else:
-            low_rank = torch.zeros_like(centered)
+            low_rank = torch.zeros_like(features)
         if self.residual_codec is not None:
-            residual = centered - low_rank
+            residual = features - low_rank
             residual_nchw = residual.transpose(1, 2).unsqueeze(2)
             normalized_residual = (
                 residual_nchw - self.residual_mean
             ) / self.residual_std.clamp_min(1e-08)
             residual_payload, _ = self.residual_codec.compress(normalized_residual)
-        mean_bytes = (
-            mean.detach()
-            .to(device="cpu", dtype=torch.float16)
-            .contiguous()
-            .numpy()
-            .tobytes()
-        ) if self.config.use_centering else b""
         scene = SceneBitstream(
             points=features.shape[1],
             channels=features.shape[2],
             rank=self.config.rank,
-            mean_fp16=mean_bytes,
+            mean_fp16=b"",
             score=score_payload,
             residual=residual_payload,
             flags=self.flags,
@@ -406,23 +313,13 @@ class ObservableLowRank1DCodec(nn.Module):
             raise ValueError("residual payload presence does not match codec mode")
         if bool(scene.score) != (self.score_context is not None):
             raise ValueError("Score payload presence does not match codec mode")
+        if scene.mean_fp16:
+            raise ValueError("bitstream carries a scene mean; the minimal codec sends none")
         parameter = self.shared_basis if self.shared_basis is not None else self.geometry_projection.weight
-        expected_mean_bytes = 2 * scene.channels if self.config.use_centering else 0
-        if len(scene.mean_fp16) != expected_mean_bytes:
-            raise ValueError("bitstream mean payload does not match centering setting")
-        if self.config.use_centering:
-            mean = torch.frombuffer(bytearray(scene.mean_fp16), dtype=torch.float16).to(
-                device=parameter.device, dtype=parameter.dtype
-            ).reshape(1, scene.channels)
-        else:
-            mean = parameter.new_zeros(1, scene.channels)
         if self.score_context is not None:
-            with torch.autocast(device_type=mean.device.type, enabled=False):
-                score_hat_nchw = self.score_context.decompress(
-                    scene.score, mean.float(), scene.points, self.score_entropy
-                )
+            with torch.autocast(device_type=parameter.device.type, enabled=False):
+                score_hat_nchw = self.score_context.decompress(scene.score, scene.points)
             score_hat = score_hat_nchw.squeeze(2).transpose(1, 2)
-            score_hat = score_hat * self.score_scale[None, None, :]
             low_rank = self._synthesize_low_rank(score_hat)
         else:
             low_rank = parameter.new_zeros(1, scene.points, scene.channels)
@@ -434,7 +331,7 @@ class ObservableLowRank1DCodec(nn.Module):
             residual_hat = residual_hat_nchw.squeeze(2).transpose(1, 2)
         else:
             residual_hat = torch.zeros_like(low_rank)
-        reconstruction = mean[:, None, :] + low_rank + residual_hat
+        reconstruction = self._promote(low_rank, parameter) + residual_hat
         if inverse_permutation is not None:
             from .morton import batched_gather
 
@@ -446,7 +343,7 @@ class ObservableLowRank1DCodec(nn.Module):
 
     def update(self, force: bool = False, update_quantiles: bool = False) -> bool:
         score_updated = self.score_context.update(
-            self.score_entropy, force=force, update_quantiles=update_quantiles
+            force=force, update_quantiles=update_quantiles
         ) if self.score_context is not None else False
         residual_updated = self.residual_codec.update(
             force=force, update_quantiles=update_quantiles
@@ -454,7 +351,7 @@ class ObservableLowRank1DCodec(nn.Module):
         return bool(score_updated or residual_updated)
 
     def aux_loss(self) -> Tensor:
-        loss = (self.score_context.aux_loss(self.score_entropy) if self.score_context is not None
+        loss = (self.score_context.aux_loss() if self.score_context is not None
                 else self.geometry_projection.weight.new_zeros(()))
         if self.residual_codec is not None:
             loss = loss + self.residual_codec.entropy_bottleneck.loss()
@@ -462,7 +359,5 @@ class ObservableLowRank1DCodec(nn.Module):
 
     def extra_repr(self) -> str:
         return (f"channels={self.config.observable_channels}, rank={self.config.rank}, "
-                f"transform={self.config.transform}, centering={self.config.use_centering}, "
-                f"score_norm={self.config.use_score_norm}, ordering=morton, residual=multiscale1d, "
-                f"mean_context={self.config.score_mean_condition}, "
-                f"channel_context={self.config.score_channel_context}, spatial=Split")
+                f"mode={self.config.codec_mode}, order={self.config.token_order}, "
+                f"schedule={self.config.score_context_schedule}, residual=multiscale1d")

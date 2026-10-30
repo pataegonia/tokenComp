@@ -396,13 +396,10 @@ def main(cfg: DictConfig) -> None:
         state_dict = checkpoint.get("state_dict", checkpoint)
         if getattr(lit.model, "feature_codec", None) is not None:
             from globalsplat.compression import resize_registered_buffers
-            from globalsplat.compression.checkpoint import (
-                validate_feature_codec_checkpoint,
-                validate_score_mean_offset_mode,
-            )
+            from globalsplat.compression.checkpoint import strip_retired_state, validate_feature_codec_checkpoint
 
             validate_feature_codec_checkpoint(checkpoint, lit.model.feature_codec.config)
-            validate_score_mean_offset_mode(checkpoint, lit.model.feature_codec)
+            state_dict = strip_retired_state(state_dict)
             resize_registered_buffers(lit, state_dict)
         missing, unexpected = lit.load_state_dict(state_dict, strict=False)
         if missing or unexpected:
@@ -428,8 +425,8 @@ def main(cfg: DictConfig) -> None:
             from globalsplat.compression import resize_registered_buffers
             from globalsplat.compression.checkpoint import (
                 convert_score_path_state,
+                strip_retired_state,
                 validate_feature_codec_checkpoint,
-                validate_score_mean_offset_mode,
                 validate_weights_only_load,
             )
 
@@ -439,13 +436,7 @@ def main(cfg: DictConfig) -> None:
                     cfg.checkpointing.get("allow_score_path_conversion", False)
                 ),
             )
-            validate_score_mean_offset_mode(
-                state,
-                lit.model.feature_codec,
-                allow_conversion=bool(
-                    cfg.checkpointing.get("allow_score_mean_offset_conversion", False)
-                ),
-            )
+            state_dict = strip_retired_state(state_dict)
             # Single-path conversions change only switches; their tensors load as-is.
             if (cfg.checkpointing.get("allow_score_path_conversion", False)
                     and lit.model.feature_codec.config.codec_mode == "two_path"):
@@ -460,11 +451,6 @@ def main(cfg: DictConfig) -> None:
                     f"Retained {len(fixed_loss_missing)} re-created frozen loss-network tensors; "
                     "all model weights matched the checkpoint."
                 )
-        if cfg.checkpointing.get("reset_score_mean_offset", False):
-            from globalsplat.compression.checkpoint import reset_score_mean_offset_head
-
-            reset_score_mean_offset_head(lit.model.feature_codec)
-            rank_zero_print("Reset score mean-offset head for matched ablation warm start.")
         rank_zero_print(f"Loaded weights from {run.weights_only} (no optimizer/step state). "
               f"missing={len(missing)} unexpected={len(unexpected)}")
     if run.resume_ckpt is not None:

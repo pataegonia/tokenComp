@@ -49,13 +49,9 @@ def parameter_footprint(codec):
     groups = {
         "geometry_projection": [codec.geometry_projection],
         "residual_msh": [codec.residual_codec],
-        "score_probability": list(context.active_entropies(codec.score_entropy)),
+        "score_probability": list(context.active_entropies()),
         "context_predictors": [],
     }
-    if context.mean_condition:
-        groups["context_predictors"].append(context.mean_conditioner)
-    if context.channel_context:
-        groups["context_predictors"].append(context.channel_predictors)
     if context.spatial_context:
         if context.context_schedule != "legacy":
             groups["context_predictors"].append(context.anchor_predictors)
@@ -65,10 +61,6 @@ def parameter_footprint(codec):
                 if context.spatial_stages >= count:
                     groups["context_predictors"].append(getattr(context, name))
     direct = [codec.shared_basis, codec.shared_synthesis_basis]
-    if codec.config.use_score_norm:
-        direct.append(codec.score_log_scale)
-    if codec.config.transform == "nonlinear":
-        groups["nonlinear_transform"] = [codec.analysis_mlp, codec.synthesis_mlp]
     active = {id(p): p for p in direct}
     counts = {"low_rank_bases": sum(p.numel() for p in direct)}
     for name, modules in groups.items():
@@ -122,40 +114,38 @@ def measured(call, device):
 
 def prepare_score(codec, texture, geometry, positions):
     features = codec._pack_features(texture, geometry)
-    ordered, order, mean = codec._ordered_features(features, positions)
-    mean = codec._scene_mean(ordered) if mean is None else mean
-    centered = ordered - mean[:, None, :]
-    normalized = codec._analyze_low_rank(centered) / codec.score_scale[None, None, :]
-    return features, order, mean, centered, normalized.transpose(1, 2).unsqueeze(2)
+    ordered, order = codec._ordered_features(features, positions)
+    # FP32, as the retired unit Score scale used to promote it.
+    score = codec._analyze_low_rank(ordered).float()
+    return features, order, ordered, score.transpose(1, 2).unsqueeze(2)
 
 
-def encode_score(codec, score, mean):
+def encode_score(codec, score):
     with torch.autocast(device_type=score.device.type, enabled=False):
-        return codec.score_context.compress(score.float(), mean.float(), codec.score_entropy)
+        return codec.score_context.compress(score.float())
 
 
-def decode_score(codec, payload, mean, points):
-    with torch.autocast(device_type=mean.device.type, enabled=False):
-        return codec.score_context.decompress(payload, mean.float(), points, codec.score_entropy)
+def decode_score(codec, payload, points, device):
+    with torch.autocast(device_type=torch.device(device).type, enabled=False):
+        return codec.score_context.decompress(payload, points)
 
 
-def residual_input(codec, centered, score_hat):
-    score = score_hat.squeeze(2).transpose(1, 2) * codec.score_scale[None, None, :]
-    residual = centered - codec._synthesize_low_rank(score)
+def residual_input(codec, ordered, score_hat):
+    residual = ordered - codec._synthesize_low_rank(score_hat.squeeze(2).transpose(1, 2))
     return (residual.transpose(1, 2).unsqueeze(2)-codec.residual_mean) / codec.residual_std.clamp_min(1e-8)
 
 
 @torch.no_grad()
 def neural_profile(codec, inputs):
     texture, geometry, positions = inputs
-    features, order, mean, centered, score = prepare_score(codec, *inputs)
+    features, order, ordered, score = prepare_score(codec, *inputs)
     result = {}
-    _, result["ordering_including_score_analysis"] = covered_macs(lambda: codec._make_order(positions, features, mean))
-    (payload, score_hat), result["score_encode"] = covered_macs(lambda: encode_score(codec, score, mean))
-    decoded, result["score_decode"] = covered_macs(lambda: decode_score(codec, payload, mean, score.shape[-1]))
+    _, result["ordering_including_score_analysis"] = covered_macs(lambda: codec._make_order(positions, features))
+    (payload, score_hat), result["score_encode"] = covered_macs(lambda: encode_score(codec, score))
+    decoded, result["score_decode"] = covered_macs(lambda: decode_score(codec, payload, score.shape[-1], score.device))
     if not torch.equal(score_hat, decoded):
         raise RuntimeError("Score encode/decode mismatch")
-    residual = residual_input(codec, centered, score_hat)
+    residual = residual_input(codec, ordered, score_hat)
     (msh_payload, _), result["msh_encode"] = covered_macs(lambda: codec.residual_codec.compress(residual))
     _, result["msh_decode"] = covered_macs(lambda: codec.residual_codec.decompress(msh_payload, output_width=texture.shape[1]))
     packed, result["codec_core_encode"] = covered_macs(lambda: codec.compress(*inputs))
@@ -272,7 +262,7 @@ def load_model(spec, args):
     from omegaconf import OmegaConf
     from globalsplat.main import build_model
     from globalsplat.compression import resize_registered_buffers
-    from globalsplat.compression.checkpoint import validate_feature_codec_checkpoint
+    from globalsplat.compression.checkpoint import strip_retired_state, validate_feature_codec_checkpoint
 
     path = Path(spec["checkpoint"])
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
@@ -293,7 +283,6 @@ def load_model(spec, args):
     cfg.model.latent_rep_token_amount = int(state["scene_tokens"].shape[0])
     cfg.model.freeze_globalsplat = True
     cfg.model.feature_codec_train_scope = "all"
-    cfg.model.score_mean_offset_enabled = checkpoint.get("score_mean_offset_enabled", True)
     cfg.dataset.dataset_roots = [str(args.dataset_root)]
     cfg.dataset.mvsplat_root = str(REPO / "third_party/ZPressor/mvsplat")
     cfg.dataset.augment = False
@@ -302,6 +291,7 @@ def load_model(spec, args):
     cfg.optimizer.num_workers = args.num_workers
     cfg.seed = args.seed
     model = build_model(cfg.model)
+    state = strip_retired_state(state)
     resize_registered_buffers(model, state)
     model.load_state_dict(state, strict=True)
     codec = model.feature_codec
@@ -353,19 +343,19 @@ def profile_point(model, cache, args):
                 raise ValueError("checkpoint/input token count does not match profile protocol")
             position_call = lambda: model.gaussian_decoder.decoded_token_centers(codec.project_geometry(geometry))
             positions, position_timing = measured(position_call, args.device)
-            features, order, mean, centered, score = prepare_score(codec, texture, geometry, positions)
+            features, order, ordered, score = prepare_score(codec, texture, geometry, positions)
             for repeat in range(1 if index < args.warmup else args.repeats):
                 stages = dict(scene_encoder=encoder_timing, token_position_prepare=position_timing)
                 unused, stages["ordering_with_score_analysis"] = measured(
-                    lambda: codec._make_order(positions, features, mean), args.device)
+                    lambda: codec._make_order(positions, features), args.device)
                 del unused
                 unused, stages["permutation_gather"] = measured(lambda: order.apply(features), args.device)
                 del unused
-                (payload, score_hat), stages["score_encode"] = measured(lambda: encode_score(codec, score, mean), args.device)
-                decoded_score, stages["score_decode"] = measured(lambda: decode_score(codec, payload, mean, args.tokens), args.device)
+                (payload, score_hat), stages["score_encode"] = measured(lambda: encode_score(codec, score), args.device)
+                decoded_score, stages["score_decode"] = measured(lambda: decode_score(codec, payload, args.tokens, args.device), args.device)
                 if not torch.equal(score_hat, decoded_score):
                     raise RuntimeError("Score sender/receiver mismatch")
-                residual = residual_input(codec, centered, score_hat)
+                residual = residual_input(codec, ordered, score_hat)
                 (msh_payload, unused), stages["msh_encode"] = measured(lambda: codec.residual_codec.compress(residual), args.device)
                 del unused
                 unused, stages["msh_decode"] = measured(lambda: codec.residual_codec.decompress(msh_payload, output_width=args.tokens), args.device)
@@ -383,7 +373,7 @@ def profile_point(model, cache, args):
                 counts = neural_profile(codec, (texture, geometry, positions))
                 unused, counts["pipeline_entropy_encode"] = covered_macs(lambda: model.compress_scene_tokens(encoded))
                 del unused
-        del encoded, inputs, features, order, mean, centered, score, positions
+        del encoded, inputs, features, order, ordered, score, positions
         if index >= args.warmup:
             print(f"SCENE {index-args.warmup+1}/{args.scenes} {item['scene']}", flush=True)
     # Each scene encoder and position preparation was measured once, not once per repeat.

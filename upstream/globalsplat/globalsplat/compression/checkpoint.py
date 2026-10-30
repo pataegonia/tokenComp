@@ -1,4 +1,4 @@
-"""Infer a codec architecture and strict-load it from a Lightning checkpoint."""
+"""Validate a codec architecture and strict-load it from a Lightning checkpoint."""
 
 from __future__ import annotations
 
@@ -15,10 +15,8 @@ from .config import CodecConfig
 
 FEATURE_PREFIXES = ("model.feature_codec.", "feature_codec.")
 SCORE_PATH_FIELDS = (
-    "use_centering", "use_score_norm", "transform",
-    "score_mean_condition", "score_channel_context",
-    "score_spatial_stages", "score_spatial_kernel", "score_context_quantization",
-    "token_order", "use_morton", "score_spatial_context", "score_order_scale", "score_order_metric",
+    "score_spatial_stages", "score_spatial_kernel",
+    "token_order", "use_morton", "score_spatial_context", "score_order_metric",
     "score_context_schedule",
     "score_slice_channels",
 )
@@ -29,6 +27,19 @@ ENCODER_IMPLEMENTATION_FIELDS = (
 SINGLE_PATH_SWITCHES = (
     "token_order", "use_morton", "score_spatial_context", "score_order_metric",
     *ENCODER_IMPLEMENTATION_FIELDS,
+)
+# Frozen tensors of modules removed in the 2026-10 cleanup. Pre-cleanup minimal
+# checkpoints still carry them; their declared configuration never used them.
+RETIRED_STATE_PREFIXES = (
+    "score_log_scale", "score_entropy.", "analysis_mlp.", "synthesis_mlp.",
+    "score_context.mean_conditioner.", "score_context.channel_predictors.",
+)
+# CompressAI integer tables are rebuilt from the weights and may change shape.
+DYNAMIC_BUFFERS = ("_quantized_cdf", "_cdf_length", "_offset", "scale_table")
+# Saved metadata omits fields added after it was written; those runs used the
+# defaults of that time, which the cleanup changed.
+PRE_CLEANUP_LAYOUT_DEFAULTS = dict(
+    token_order="morton", score_spatial_stages=2, score_spatial_kernel=3, score_context_schedule="legacy",
 )
 
 
@@ -56,149 +67,55 @@ def _feature_state_dict(
     raise ValueError("checkpoint has no model.feature_codec state")
 
 
+def strip_retired_state(state_dict: Mapping[str, Tensor]) -> dict[str, Tensor]:
+    """Drop retired-module tensors from a model, codec or pre-cleanup checkpoint state."""
+
+    def retired(key: str) -> bool:
+        return any(key.startswith(prefix) and key[len(prefix):].startswith(RETIRED_STATE_PREFIXES)
+                   for prefix in (*FEATURE_PREFIXES, ""))
+
+    return {key: value for key, value in state_dict.items() if not retired(key)}
+
+
+def check_retired_metadata(checkpoint: Mapping[str, Any]) -> None:
+    """Reject a checkpoint whose Score streams set the retired no-offset flag."""
+    if checkpoint.get("score_mean_offset_enabled", True) is not True:
+        raise ValueError("score_mean_offset_enabled=false was removed in the codec cleanup; "
+                         "use git tag fresh-rd-v1 for that checkpoint")
+
+
 def infer_config(
     state: Mapping[str, Tensor], metadata: Mapping[str, Any] | None = None
 ) -> CodecConfig:
-    """Recover dimensions; ablation switches live in checkpoint metadata.
+    """Return the saved configuration after checking it against every tensor.
 
-    Disabled branches retain frozen compatibility tensors, so their presence
-    cannot determine the active score path. Older metadata defaults to full.
+    Disabled branches retain frozen compatibility tensors, so tensors alone
+    cannot determine the active score path; the metadata is required.
     """
-    if metadata is not None and metadata.get("codec_mode", "two_path") != "two_path":
-        return _infer_single_path_config(state, metadata)
-    if "shared_synthesis_basis" not in state:
-        raise ValueError("checkpoint is not the supported untied-synthesis codec")
-    required = (
-        "analysis_mlp.0.weight",
-        "synthesis_mlp.0.weight",
-        "score_context.mean_conditioner.1.weight",
-        "score_context.group_entropies.0.entropy_bottleneck.quantiles",
-        "score_context.spatial_odd_entropies.0.entropy_bottleneck.quantiles",
-    )
-    missing = [key for key in required if key not in state]
-    if missing:
-        raise ValueError(f"checkpoint Full P0+Split state mismatch: missing={missing}")
-    basis = state["shared_basis"]
-    geometry = state["geometry_projection.weight"]
-    rank, observable_channels = basis.shape
-    mlp_keys = {
-        key for key in state if key.startswith(("analysis_mlp.", "synthesis_mlp."))
-    }
-    transform = "nonlinear" if mlp_keys else "linear"
-    hidden = 32
-    if mlp_keys:
-        expected_keys = {
-            "analysis_mlp.0.weight",
-            "analysis_mlp.2.weight",
-            "synthesis_mlp.0.weight",
-            "synthesis_mlp.2.weight",
-        }
-        if mlp_keys != expected_keys:
-            raise ValueError(
-                "nonlinear codec requires both bias-free analysis/synthesis MLPs"
-            )
-        hidden = state["analysis_mlp.0.weight"].shape[0]
-        shapes = {
-            "analysis_mlp.0.weight": (hidden, observable_channels),
-            "analysis_mlp.2.weight": (rank, hidden),
-            "synthesis_mlp.0.weight": (hidden, rank),
-            "synthesis_mlp.2.weight": (observable_channels, hidden),
-        }
-        for key, shape in shapes.items():
-            if tuple(state[key].shape) != shape:
-                raise ValueError(f"nonlinear codec shape mismatch for {key}")
-    geometry_observable, geometry_channels = geometry.shape
-    texture_channels = observable_channels - geometry_observable
-    residual_key = "residual_codec.g_a.0.weight"
-    if residual_key not in state:
-        raise ValueError("checkpoint has no multiscale 1-D residual codec")
-    residual_n = state[residual_key].shape[0]
-    residual_m = state["residual_codec.g_a.2.weight"].shape[0]
-    adapter_hidden = state[
-        "residual_codec.analysis_adapter.in_projection.weight"
-    ].shape[0]
-    stages = 4 if any(key.startswith("score_context.split_odd_") for key in state) else (
-        3 if any(key.startswith("score_context.split_even_") for key in state) else 2
-    )
-    kernel = state["score_context.spatial_predictors.0.weight"].shape[-1]
-    anchor_key = "score_context.anchor_predictors.0.0.weight"
-    schedule = "legacy"
-    if anchor_key in state:
-        schedule = "quarter2" if state[anchor_key].shape[0] == 3 else "dyadic4"
-    marker = state.get("score_context.single_block_marker")
-    if marker is not None:
-        if marker.shape != torch.Size([]) or marker.dtype != torch.uint8 or marker.item() != 1 or schedule != "legacy" or stages != 2:
-            raise ValueError("invalid single-block checkpoint marker/state")
-        schedule, stages = "single", 1
-    inferred = CodecConfig(
-        texture_channels=texture_channels,
-        geometry_channels=geometry_channels,
-        geometry_observable_channels=geometry_observable,
-        rank=rank,
-        residual_n=residual_n,
-        residual_m=residual_m,
-        adapter_hidden=adapter_hidden,
-        transform=transform,
-        transform_hidden=hidden,
-        score_slice_channels=state[
-            "score_context.group_entropies.0.entropy_bottleneck.quantiles"
-        ].shape[0],
-        score_context_hidden=state["score_context.mean_conditioner.1.weight"].shape[0],
-        score_spatial_stages=stages,
-        score_spatial_kernel=kernel,
-        score_channel_context=stages == 2 and schedule == "legacy",
-        score_spatial_context=schedule != "single",
-        score_context_schedule=schedule,
-    )
-    _validate_spatial_predictor_state(state, inferred)
     if metadata is None:
-        return inferred
-    declared = CodecConfig.from_mapping(metadata)
-    _validate_config(inferred, declared, include_flags=False)
-    _validate_spatial_predictor_state(state, declared)
-    return declared
-
-
-def _infer_single_path_config(state: Mapping[str, Tensor], metadata: Mapping[str, Any]) -> CodecConfig:
-    """Single-path checkpoints carry explicit modes and only active branches."""
-    declared = CodecConfig.from_mapping(metadata)
+        raise ValueError("checkpoint has no feature_codec_config; pre-minimal codecs need git tag fresh-rd-v1")
+    declared = CodecConfig.from_mapping({**PRE_CLEANUP_LAYOUT_DEFAULTS, **metadata})
+    state = strip_retired_state(state)
     with torch.random.fork_rng(devices=[]):
         expected = ObservableLowRank1DCodec(declared).state_dict()
     missing = sorted(set(expected) - set(state))
     unexpected = sorted(set(state) - set(expected))
-    dynamic = {"_quantized_cdf", "_cdf_length", "_offset", "scale_table"}
     wrong = {key: (tuple(state[key].shape), tuple(value.shape))
              for key, value in expected.items() if key in state
-             and key.rsplit(".", 1)[-1] not in dynamic and state[key].shape != value.shape}
+             and key.rsplit(".", 1)[-1] not in DYNAMIC_BUFFERS and state[key].shape != value.shape}
     if missing or unexpected or wrong:
-        raise ValueError(f"single-path checkpoint state mismatch: missing={missing}, unexpected={unexpected}, shapes={wrong}")
+        raise ValueError(f"checkpoint codec state mismatch: missing={missing}, "
+                         f"unexpected={unexpected}, shapes={wrong}")
+    marker = state.get("score_context.single_block_marker")
+    if marker is not None and (marker.dtype != torch.uint8 or marker.item() != 1):
+        raise ValueError("invalid single-block checkpoint marker")
     return declared
 
 
-def _validate_config(
-    actual: CodecConfig, expected: CodecConfig, *, include_flags: bool
-) -> None:
-    ignored = (
-        set()
-        if include_flags
-        else {
-            "use_residual",
-            "use_morton",
-            "morton_bits",
-            "score_mean_condition",
-            "score_channel_context",
-            "score_spatial_context",
-            "score_spatial_predictor",
-            "score_spatial_entropy",
-            "score_spatial_hidden",
-            *(key for key in SCORE_PATH_FIELDS if key not in (
-                "score_spatial_stages", "score_spatial_kernel", "score_context_schedule", "score_slice_channels"
-            )),
-        }
-    )
+def _validate_config(actual: CodecConfig, expected: CodecConfig) -> None:
     # These select how an encoder computes the same greedy rule, not model
     # architecture. Switching them is allowed in strict optimizer-state resume.
-    ignored.update(ENCODER_IMPLEMENTATION_FIELDS)
+    ignored = set(ENCODER_IMPLEMENTATION_FIELDS)
     expected_values = expected.to_dict()
     mismatches = {
         key: (value, expected_values[key])
@@ -211,52 +128,12 @@ def _validate_config(
         )
 
 
-def _validate_spatial_predictor_state(
-    state: Mapping[str, Tensor], config: CodecConfig
-) -> None:
-    """Reject incomplete or retired score branches before loading model weights."""
-    from .score_context import ContextualScoreEntropy
-
-    with torch.random.fork_rng(devices=[]):
-        context = ContextualScoreEntropy(
-            rank=config.rank,
-            scene_channels=config.observable_channels,
-            slice_channels=config.score_slice_channels,
-            hidden=config.score_context_hidden,
-            mean_condition=config.score_mean_condition,
-            channel_context=config.score_channel_context,
-            spatial_context=config.score_spatial_context,
-            spatial_stages=config.score_spatial_stages,
-            spatial_kernel=config.score_spatial_kernel,
-            context_quantization=config.score_context_quantization,
-            context_schedule=config.score_context_schedule,
-        )
-    expected = {
-        "score_context." + key: tuple(value.shape)
-        for key, value in context.named_parameters()
-    }
-    missing = sorted(set(expected) - set(state))
-    wrong = {
-        key: (tuple(state[key].shape), shape)
-        for key, shape in expected.items()
-        if key in state and tuple(state[key].shape) != shape
-    }
-    allowed = {"score_context." + key for key in context.state_dict()}
-    unexpected = sorted(
-        key for key in state if key.startswith("score_context.") and key not in allowed
-    )
-    if missing or wrong or unexpected:
-        raise ValueError(
-            f"checkpoint Full P0+Split state mismatch: missing={missing}, "
-            f"shapes={wrong}, unexpected={unexpected}"
-        )
-
-
 def validate_feature_codec_checkpoint(
     checkpoint: Mapping[str, Any], config: CodecConfig, *,
     allow_score_path_conversion: bool = False,
 ) -> None:
     """Require the main codec architecture and matching saved metadata."""
+    check_retired_metadata(checkpoint)
     state, _ = _feature_state_dict(checkpoint.get("state_dict", checkpoint))
     metadata = checkpoint.get("feature_codec_config")
     actual = infer_config(state, metadata)
@@ -268,15 +145,13 @@ def validate_feature_codec_checkpoint(
             # spatial-context switch may change, never any tensor or other mode.
             actual = replace(actual, **{key: getattr(config, key) for key in SINGLE_PATH_SWITCHES})
         else:
-            if actual.score_slice_channels != config.score_slice_channels and (
-                config.score_spatial_context or config.score_channel_context
-            ):
-                raise ValueError("channel regrouping requires spatial and channel context OFF")
+            if actual.score_slice_channels != config.score_slice_channels and config.score_spatial_context:
+                raise ValueError("channel regrouping requires spatial context OFF")
             # Only explicitly requested score switches may change in a weights-only
             # warm start. Feature/rank dimensions, MSH and other settings still match.
             actual = replace(actual, **{key: getattr(config, key) for key in
                                        (*SCORE_PATH_FIELDS, *ENCODER_IMPLEMENTATION_FIELDS)})
-    _validate_config(actual, config, include_flags=True)
+    _validate_config(actual, config)
 
 
 def convert_score_path_state(
@@ -291,6 +166,7 @@ def convert_score_path_state(
     stage. Integer CDF tables are rebuilt. Everything outside score_context
     passes through untouched. Optimizer resume and evaluation stay strict.
     """
+    state_dict = strip_retired_state(state_dict)
     state, feature_prefix = _feature_state_dict(state_dict)
     prefix = feature_prefix + "score_context."
     source = {key[len("score_context."):]: value for key, value in state.items()
@@ -299,8 +175,8 @@ def convert_score_path_state(
     while f"group_entropies.{len(source_widths)}.entropy_bottleneck.quantiles" in source:
         source_widths.append(source[f"group_entropies.{len(source_widths)}.entropy_bottleneck.quantiles"].shape[0])
     regroup = tuple(source_widths) != codec.score_context.group_sizes
-    if regroup and (codec.config.score_spatial_context or codec.config.score_channel_context):
-        raise ValueError("channel regrouping requires spatial and channel context OFF")
+    if regroup and codec.config.score_spatial_context:
+        raise ValueError("channel regrouping requires spatial context OFF")
     if sum(source_widths) != codec.config.rank:
         raise ValueError("source Score entropy channels do not cover the requested rank")
     parameter_names = set(dict(codec.score_context.named_parameters()))
@@ -370,26 +246,6 @@ def convert_score_path_state(
     return converted
 
 
-def validate_score_mean_offset_mode(
-    checkpoint: Mapping[str, Any],
-    codec: ObservableLowRank1DCodec,
-    *,
-    allow_conversion: bool = False,
-) -> None:
-    """Keep the ablation mode with its checkpoint, except for an explicit warm start."""
-
-    saved = checkpoint.get("score_mean_offset_enabled", True)
-    if codec.score_context is None:
-        return
-    requested = codec.score_context.mean_offset_enabled
-    if type(saved) is not bool:
-        raise ValueError("invalid score_mean_offset_enabled checkpoint metadata")
-    if saved != requested and not allow_conversion:
-        raise ValueError(
-            f"checkpoint score_mean_offset_enabled={saved}, requested={requested}"
-        )
-
-
 def validate_weights_only_load(
     missing_keys: Iterable[str], unexpected_keys: Iterable[str],
 ) -> None:
@@ -407,16 +263,6 @@ def validate_weights_only_load(
         raise RuntimeError(
             f"training checkpoint does not match model: missing={missing}, unexpected={unexpected}"
         )
-
-
-def reset_score_mean_offset_head(codec: ObservableLowRank1DCodec) -> None:
-    """Give control and ablation arms the same zero-offset initial forward pass."""
-
-    head = codec.score_context.mean_conditioner[-1]
-    rank = codec.config.rank
-    with torch.no_grad():
-        head.weight[:rank].zero_()
-        head.bias[:rank].zero_()
 
 
 def resize_registered_buffers(module: nn.Module, state: Mapping[str, Tensor]) -> None:
@@ -444,15 +290,12 @@ def load_feature_codec_checkpoint(
     """Strict-load only the reconstructed feature-codec branch."""
 
     checkpoint = torch.load(Path(path), map_location=map_location, weights_only=False)
+    check_retired_metadata(checkpoint)
     raw_state = checkpoint.get("state_dict", checkpoint)
     feature_state, prefix = _feature_state_dict(raw_state)
+    feature_state = strip_retired_state(feature_state)
     config = infer_config(feature_state, checkpoint.get("feature_codec_config"))
     codec = ObservableLowRank1DCodec(config)
-    if codec.score_context is not None:
-        codec.score_context.mean_offset_enabled = checkpoint.get(
-            "score_mean_offset_enabled", True
-        )
-    validate_score_mean_offset_mode(checkpoint, codec)
     resize_registered_buffers(codec, feature_state)
     incompatible = codec.load_state_dict(feature_state, strict=True)
     if incompatible.missing_keys or incompatible.unexpected_keys:

@@ -188,7 +188,7 @@ def load_codec_initialization(
 
     - ``geometry_basis`` -> ``geometry_projection.weight``
     - ``shared_basis`` -> both initial analysis and synthesis matrices
-    - ``score_scale`` -> ``score_log_scale``
+    - ``score_scale`` is validated but unused: the minimal codec has no Score norm
     - flat residual mean/std -> registered NCHW buffers
 
     Loading only the identically named ``shared_basis`` silently produces a
@@ -223,7 +223,6 @@ def load_codec_initialization(
             "geometry_projection.weight": source["geometry_basis"],
             "shared_basis": source["shared_basis"],
             "shared_synthesis_basis": source["shared_basis"],
-            "score_log_scale": score_scale.log(),
             "residual_mean": source["residual_mean"].reshape(1, -1, 1, 1),
             "residual_std": residual_std.reshape(1, -1, 1, 1),
         }

@@ -37,7 +37,7 @@ class AnchorPairPredictor(nn.Module):
 
 
 class ContextualScoreEntropy(nn.Module):
-    """Condition score coding on decoded scene, channel, and ordered tokens.
+    """Condition score coding on decoded, ordered tokens.
 
     Channel groups are decoded serially, but every token within a group is
     processed in parallel. Spatial context uses two, three or four passes over
@@ -45,6 +45,8 @@ class ContextualScoreEntropy(nn.Module):
     Context-OFF single schedule codes all tokens in one unpredicted pass.
     """
 
+    # FLAG_MEAN, FLAG_CHANNEL and FLAG_NO_MEAN_OFFSET belong to retired modes;
+    # they stay known so older streams fail with a configuration mismatch.
     FLAG_MEAN = 1 << 0
     FLAG_CHANNEL = 1 << 1
     FLAG_SPATIAL = 1 << 2
@@ -65,28 +67,20 @@ class ContextualScoreEntropy(nn.Module):
     )
 
     def __init__(
-        self, *, rank: int, scene_channels: int, slice_channels: int, hidden: int,
-        mean_condition: bool = True, channel_context: bool = True,
+        self, *, rank: int, slice_channels: int,
         spatial_context: bool = True,
-        spatial_stages: int = 2, spatial_kernel: int = 3,
-        context_quantization: str = "noise",
-        context_schedule: str = "legacy",
+        spatial_stages: int = 4, spatial_kernel: int = 5,
+        context_schedule: str = "dyadic4",
     ) -> None:
         super().__init__()
         self.rank = int(rank)
-        self.scene_channels = int(scene_channels)
         self.slice_channels = int(slice_channels)
-        self.mean_condition = mean_condition
-        self.channel_context = channel_context
         self.spatial_context = spatial_context
         self.spatial_stages = spatial_stages
         self.spatial_kernel = spatial_kernel
-        self.context_quantization = context_quantization
         self.context_schedule = context_schedule
         if spatial_stages not in (1, 2, 3, 4) or spatial_kernel not in (3, 5, 7):
             raise ValueError("unsupported spatial stage count or kernel")
-        if context_quantization not in ("noise", "ste"):
-            raise ValueError("context_quantization must be noise or ste")
         if context_schedule not in ("legacy", "quarter2", "dyadic4", "single"):
             raise ValueError("unsupported context schedule")
         if spatial_stages == 1 and context_schedule != "single":
@@ -94,10 +88,10 @@ class ContextualScoreEntropy(nn.Module):
         if context_schedule == "single" and spatial_context:
             raise ValueError("single requires spatial_context=false")
         if context_schedule != "legacy":
-            if spatial_stages != {"single": 1, "quarter2": 2, "dyadic4": 4}[context_schedule] or channel_context:
-                raise ValueError("anchor schedules require matching stage count and no channel context")
-        elif spatial_stages > 2 and (channel_context or spatial_kernel not in (5, 7)):
-            raise ValueError("3/4 spatial stages require no channel context and kernel 5 or 7")
+            if spatial_stages != {"single": 1, "quarter2": 2, "dyadic4": 4}[context_schedule]:
+                raise ValueError("anchor schedules require a matching stage count")
+        elif spatial_stages > 2 and spatial_kernel not in (5, 7):
+            raise ValueError("3/4 spatial stages require kernel 5 or 7")
         self.group_sizes = tuple(
             (
                 min(self.slice_channels, self.rank - start)
@@ -107,22 +101,6 @@ class ContextualScoreEntropy(nn.Module):
         self.group_entropies = nn.ModuleList(
             (FactorizedScoreEntropy(width) for width in self.group_sizes)
         )
-        self.mean_conditioner = nn.Sequential(
-            nn.LayerNorm(self.scene_channels),
-            nn.Linear(self.scene_channels, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, 2 * self.rank),
-        )
-        nn.init.zeros_(self.mean_conditioner[-1].weight)
-        nn.init.zeros_(self.mean_conditioner[-1].bias)
-        self.channel_predictors = nn.ModuleList()
-        decoded = self.group_sizes[0]
-        for width in self.group_sizes[1:]:
-            predictor = nn.Conv2d(decoded, width, 1)
-            nn.init.zeros_(predictor.weight)
-            nn.init.zeros_(predictor.bias)
-            self.channel_predictors.append(predictor)
-            decoded += width
         self.spatial_predictors = nn.ModuleList()
         self.spatial_odd_entropies = nn.ModuleList()
         for width in self.group_sizes:
@@ -158,11 +136,6 @@ class ContextualScoreEntropy(nn.Module):
             # Explicit architecture marker: inactive compatibility modules alone
             # cannot distinguish this checkpoint from legacy two-stage state.
             self.register_buffer("single_block_marker", torch.tensor(1, dtype=torch.uint8))
-        # Evaluation diagnostics are opt-in so normal training/coding does not
-        # pay for GPU reductions or device-to-host copies.
-        self.mean_offset_enabled = True
-        self.capture_diagnostics = False
-        self.last_compress_diagnostics: dict[str, object] | None = None
         self.last_compress_stage_bytes: dict[str, int] | None = None
         # Analysis-only callback; receives the exact causal tensors used by the
         # staged encoder. No copies/reductions/state changes when unset.
@@ -177,16 +150,9 @@ class ContextualScoreEntropy(nn.Module):
 
     @property
     def flags(self) -> int:
-        flags = 0
-        if self.mean_condition:
-            flags |= self.FLAG_MEAN
-        if self.channel_context:
-            flags |= self.FLAG_CHANNEL
+        flags = self.FLAG_SPATIAL_ENTROPY_SPLIT
         if self.spatial_context:
             flags |= self.FLAG_SPATIAL
-        flags |= self.FLAG_SPATIAL_ENTROPY_SPLIT
-        if not self.mean_offset_enabled:
-            flags |= self.FLAG_NO_MEAN_OFFSET
         if self.spatial_stages == 3:
             flags |= self.FLAG_THREE_STAGES
         elif self.spatial_stages == 4:
@@ -203,14 +169,7 @@ class ContextualScoreEntropy(nn.Module):
             flags |= self.FLAG_SINGLE
         return flags
 
-    def _entropy(
-        self, base_entropy: FactorizedScoreEntropy, group_index: int
-    ) -> FactorizedScoreEntropy:
-        return self.group_entropies[group_index]
-
-    def active_entropies(
-        self, base_entropy: FactorizedScoreEntropy
-    ) -> Iterable[FactorizedScoreEntropy]:
+    def active_entropies(self) -> Iterable[FactorizedScoreEntropy]:
         even = tuple(self.group_entropies)
         if self.context_schedule == "single":
             return even
@@ -223,8 +182,7 @@ class ContextualScoreEntropy(nn.Module):
 
     def _entropy_forward(self, entropy, symbols, *, training):
         value, likelihood = entropy(symbols, training=training)
-        is_training = self.training if training is None else training
-        if is_training and self.context_quantization == "ste":
+        if self.training if training is None else training:
             # Match the sender/receiver lattice, including the learned median.
             bottleneck = entropy.entropy_bottleneck
             rounded = bottleneck.quantize(symbols, "dequantize", bottleneck._get_medians())
@@ -266,7 +224,11 @@ class ContextualScoreEntropy(nn.Module):
             return self.spatial_odd_entropies[group], self.spatial_predictors[group]
         return self.split_odd_entropies[group], self.split_odd_predictors[group]
 
-    def _staged(self, scene_mean, points, base_entropy, *, scores=None,
+    def _reference(self) -> Tensor:
+        """An FP32 tensor on the module device for the receiver's parameters."""
+        return self.group_entropies[0].entropy_bottleneck.quantiles
+
+    def _staged(self, points, like, *, scores=None,
                 strings=None, training=None, mode="forward"):
         """Stage-major coding: all channels of A precede any channels of B.
 
@@ -275,7 +237,7 @@ class ContextualScoreEntropy(nn.Module):
         """
         if points < 1:
             raise ValueError("score stream must contain at least one token")
-        offset, step = self._scene_parameters(scene_mean)
+        offset, step = self._scene_parameters(1 if scores is None else scores.shape[0], like)
         base = offset[:, :, None, None].expand(-1, -1, 1, points)
         decoded = torch.zeros_like(base)
         likelihoods = torch.zeros_like(base)
@@ -283,7 +245,7 @@ class ContextualScoreEntropy(nn.Module):
         output_strings = []
         stage_bytes = {}
         for stage, (name, indices) in enumerate(self.stage_indices(points, base.device)):
-            # Future sites stay exactly zero even when mean/channel offsets exist.
+            # Future sites stay exactly zero.
             context = torch.where(visible, decoded - base, torch.zeros_like(decoded))
             reconstructed_groups, likelihood_groups = [], []
             start, byte_count = 0, 0
@@ -358,31 +320,14 @@ class ContextualScoreEntropy(nn.Module):
             return decoded
         return decoded, likelihoods
 
-    def _scene_parameters(self, scene_mean: Tensor) -> tuple[Tensor, Tensor]:
-        if not self.mean_condition:
-            shape = (scene_mean.shape[0], self.rank)
-            return scene_mean.new_zeros(shape), scene_mean.new_ones(shape)
-        parameters = self.mean_conditioner(scene_mean)
-        offset, log_step = parameters.chunk(2, dim=-1)
-        if not self.mean_offset_enabled:
-            offset = torch.zeros_like(offset)
-        step = torch.exp(2.0 * torch.tanh(0.5 * log_step))
-        return (offset, step)
+    def _scene_parameters(self, batch: int, like: Tensor) -> tuple[Tensor, Tensor]:
+        """Zero offset and unit step: the minimal codec sends no scene mean."""
+        shape = (batch, self.rank)
+        return like.new_zeros(shape), like.new_ones(shape)
 
-    def _group_base(
-        self,
-        decoded_groups: list[Tensor],
-        offset: Tensor,
-        start: int,
-        width: int,
-        points: int,
-        group_index: int,
-    ) -> Tensor:
-        base = offset[:, start : start + width, None, None].expand(-1, -1, 1, points)
-        if self.channel_context and group_index > 0:
-            previous = torch.cat(decoded_groups, dim=1)
-            base = base + self.channel_predictors[group_index - 1](previous)
-        return base
+    @staticmethod
+    def _group_base(offset: Tensor, start: int, width: int, points: int) -> Tensor:
+        return offset[:, start : start + width, None, None].expand(-1, -1, 1, points)
 
     @staticmethod
     def _merge_even_odd(even: Tensor, odd: Tensor, points: int) -> Tensor:
@@ -406,85 +351,23 @@ class ContextualScoreEntropy(nn.Module):
         prediction = self.spatial_predictors[group_index](anchor_delta)
         return prediction[..., 1::2]
 
-    @staticmethod
-    def _append_channel_diagnostics(
-        destination: dict[str, list[float] | list[int]], value: Tensor
-    ) -> None:
-        """Append exact sufficient statistics for each channel in ``value``."""
-
-        channels = value.detach().float().transpose(0, 1).reshape(value.shape[1], -1)
-        count = channels.shape[1]
-        destination["count"].extend([count] * channels.shape[0])
-        if "first_token_b" in destination:
-            destination["first_token_b"].extend(channels[:, 0].cpu().tolist())
-        destination["sum"].extend(channels.sum(dim=1).cpu().tolist())
-        destination["sum_squares"].extend(
-            channels.square().sum(dim=1).cpu().tolist()
-        )
-        destination["sum_abs"].extend(channels.abs().sum(dim=1).cpu().tolist())
-        destination["min"].extend(channels.amin(dim=1).cpu().tolist())
-        destination["max"].extend(channels.amax(dim=1).cpu().tolist())
-
-    def _odd_forward(
-        self,
-        symbols: Tensor,
-        even_entropy: FactorizedScoreEntropy,
-        group_index: int,
-        anchor_hat: Tensor,
-        base: Tensor,
-        *,
-        training: bool | None,
-    ) -> tuple[Tensor, Tensor]:
-        return self._entropy_forward(self.spatial_odd_entropies[group_index], symbols, training=training)
-
-    @torch.no_grad()
-    def _odd_compress(
-        self,
-        symbols: Tensor,
-        even_entropy: FactorizedScoreEntropy,
-        group_index: int,
-        anchor_hat: Tensor,
-        base: Tensor,
-    ) -> tuple[bytes, Tensor]:
-        entropy = self.spatial_odd_entropies[group_index]
-        strings = entropy.compress(symbols)
-        return (strings[0], entropy.decompress(strings, symbols.shape[-2:]))
-
-    @torch.no_grad()
-    def _odd_decompress(
-        self,
-        string: bytes,
-        shape: tuple[int, int],
-        even_entropy: FactorizedScoreEntropy,
-        group_index: int,
-        anchor_hat: Tensor,
-        base: Tensor,
-    ) -> Tensor:
-        return self.spatial_odd_entropies[group_index].decompress([string], shape)
-
     def forward(
-        self,
-        scores: Tensor,
-        scene_mean: Tensor,
-        base_entropy: FactorizedScoreEntropy,
-        *,
-        training: bool | None = None,
+        self, scores: Tensor, *, training: bool | None = None,
     ) -> tuple[Tensor, Tensor]:
         if scores.ndim != 4 or scores.shape[1] != self.rank or scores.shape[2] != 1:
             raise ValueError(f"scores must have shape [B,{self.rank},1,N]")
         if self.spatial_stages > 2 or self.context_schedule != "legacy":
-            return self._staged(scene_mean, scores.shape[-1], base_entropy,
-                                scores=scores, training=training)
-        offset, step = self._scene_parameters(scene_mean)
+            return self._staged(scores.shape[-1], scores, scores=scores, training=training)
+        offset, step = self._scene_parameters(scores.shape[0], scores)
         points = scores.shape[-1]
         decoded: list[Tensor] = []
         likelihoods: list[Tensor] = []
         start = 0
         for group_index, width in enumerate(self.group_sizes):
             target = scores[:, start : start + width]
-            base = self._group_base(decoded, offset, start, width, points, group_index)
+            base = self._group_base(offset, start, width, points)
             group_step = step[:, start : start + width, None, None]
-            entropy = self._entropy(base_entropy, group_index)
+            entropy = self.group_entropies[group_index]
             even_symbols = (target[..., 0::2] - base[..., 0::2]) / group_step
             even_hat, even_likelihood = self._entropy_forward(entropy, even_symbols, training=training)
             even_hat = base[..., 0::2] + group_step * even_hat
@@ -492,8 +375,8 @@ class ContextualScoreEntropy(nn.Module):
                 group_index, even_hat, base
             )
             odd_symbols = (target[..., 1::2] - odd_base) / group_step
-            odd_hat, odd_likelihood = self._odd_forward(
-                odd_symbols, entropy, group_index, even_hat, base, training=training
+            odd_hat, odd_likelihood = self._entropy_forward(
+                self.spatial_odd_entropies[group_index], odd_symbols, training=training
             )
             odd_hat = odd_base + group_step * odd_hat
             decoded.append(self._merge_even_odd(even_hat, odd_hat, points))
@@ -504,66 +387,22 @@ class ContextualScoreEntropy(nn.Module):
         return (torch.cat(decoded, dim=1), torch.cat(likelihoods, dim=1))
 
     @torch.no_grad()
-    def compress(
-        self, scores: Tensor, scene_mean: Tensor, base_entropy: FactorizedScoreEntropy
-    ) -> tuple[bytes, Tensor]:
+    def compress(self, scores: Tensor) -> tuple[bytes, Tensor]:
         if scores.shape[0] != 1:
             raise ValueError("contextual score bitstream stores one scene at a time")
         if self.spatial_stages > 2 or self.context_schedule != "legacy":
-            if self.capture_diagnostics:
-                raise ValueError("b/even-odd diagnostics require legacy 2 stages; use score stage byte records")
-            return self._staged(scene_mean, scores.shape[-1], base_entropy, scores=scores, mode="encode")
-        offset, step = self._scene_parameters(scene_mean)
-        self.last_compress_diagnostics = None
-        diagnostics = None
-        if self.capture_diagnostics:
-            stat_names = ("count", "sum", "sum_squares", "sum_abs", "min", "max")
-            diagnostics = {
-                "mean_offset_b": offset[0].detach().float().cpu().tolist(),
-                "quantization_step_d": step[0].detach().float().cpu().tolist(),
-                "effective_b_even": {
-                    name: [] for name in (*stat_names, "first_token_b")
-                },
-                "effective_b_odd": {
-                    name: [] for name in (*stat_names, "first_token_b")
-                },
-            }
-            for parity in ("even", "odd"):
-                for value in (
-                    "score", "mean_centered_score", "centered_score", "entropy_input"
-                ):
-                    diagnostics[f"{value}_{parity}"] = {
-                        name: [] for name in stat_names
-                    }
+            return self._staged(scores.shape[-1], scores, scores=scores, mode="encode")
+        offset, step = self._scene_parameters(1, scores)
         points = scores.shape[-1]
         decoded: list[Tensor] = []
         strings: list[bytes] = []
         start = 0
         for group_index, width in enumerate(self.group_sizes):
             target = scores[:, start : start + width]
-            base = self._group_base(decoded, offset, start, width, points, group_index)
+            base = self._group_base(offset, start, width, points)
             group_step = step[:, start : start + width, None, None]
-            entropy = self._entropy(base_entropy, group_index)
-            even_target = target[..., 0::2]
-            even_base = base[..., 0::2]
-            even_centered = even_target - even_base
-            even_symbols = even_centered / group_step
-            if diagnostics is not None:
-                mean_base = offset[:, start : start + width, None, None]
-                self._append_channel_diagnostics(
-                    diagnostics["effective_b_even"], even_base
-                )
-                self._append_channel_diagnostics(diagnostics["score_even"], even_target)
-                self._append_channel_diagnostics(
-                    diagnostics["mean_centered_score_even"],
-                    even_target - mean_base,
-                )
-                self._append_channel_diagnostics(
-                    diagnostics["centered_score_even"], even_centered
-                )
-                self._append_channel_diagnostics(
-                    diagnostics["entropy_input_even"], even_symbols
-                )
+            entropy = self.group_entropies[group_index]
+            even_symbols = (target[..., 0::2] - base[..., 0::2]) / group_step
             encoded = entropy.compress(even_symbols)
             strings.append(encoded[0])
             even_hat = entropy.decompress(encoded, even_symbols.shape[-2:])
@@ -571,32 +410,14 @@ class ContextualScoreEntropy(nn.Module):
             odd_base = base[..., 1::2] + self._spatial_prediction(
                 group_index, even_hat, base
             )
-            odd_target = target[..., 1::2]
-            odd_centered = odd_target - odd_base
-            odd_symbols = odd_centered / group_step
-            if diagnostics is not None:
-                self._append_channel_diagnostics(
-                    diagnostics["effective_b_odd"], odd_base
-                )
-                self._append_channel_diagnostics(diagnostics["score_odd"], odd_target)
-                self._append_channel_diagnostics(
-                    diagnostics["mean_centered_score_odd"],
-                    odd_target - mean_base,
-                )
-                self._append_channel_diagnostics(
-                    diagnostics["centered_score_odd"], odd_centered
-                )
-                self._append_channel_diagnostics(
-                    diagnostics["entropy_input_odd"], odd_symbols
-                )
-            odd_string, odd_hat = self._odd_compress(
-                odd_symbols, entropy, group_index, even_hat, base
-            )
-            strings.append(odd_string)
+            odd_symbols = (target[..., 1::2] - odd_base) / group_step
+            odd_entropy = self.spatial_odd_entropies[group_index]
+            odd_encoded = odd_entropy.compress(odd_symbols)
+            strings.append(odd_encoded[0])
+            odd_hat = odd_entropy.decompress(odd_encoded, odd_symbols.shape[-2:])
             odd_hat = odd_base + group_step * odd_hat
             decoded.append(self._merge_even_odd(even_hat, odd_hat, points))
             start += width
-        self.last_compress_diagnostics = diagnostics
         self.last_compress_stage_bytes = {"even": sum(len(s) for s in strings[0::2]),
                                           "odd": sum(len(s) for s in strings[1::2])}
         packed = ScoreContextBitstream(
@@ -608,13 +429,7 @@ class ContextualScoreEntropy(nn.Module):
         return (packed, torch.cat(decoded, dim=1))
 
     @torch.no_grad()
-    def decompress(
-        self,
-        payload: bytes,
-        scene_mean: Tensor,
-        points: int,
-        base_entropy: FactorizedScoreEntropy,
-    ) -> Tensor:
+    def decompress(self, payload: bytes, points: int) -> Tensor:
         packed = ScoreContextBitstream.unpack(payload)
         if packed.flags & ~self.KNOWN_FLAGS:
             raise ValueError("contextual score bitstream has unknown flags")
@@ -631,18 +446,18 @@ class ContextualScoreEntropy(nn.Module):
             raise ValueError(
                 "contextual score bitstream has an unexpected stream count"
             )
+        like = self._reference()
         if self.spatial_stages > 2 or self.context_schedule != "legacy":
-            return self._staged(scene_mean, points, base_entropy, strings=packed.strings, mode="decode")
-        offset, step = self._scene_parameters(scene_mean)
+            return self._staged(points, like, strings=packed.strings, mode="decode")
+        offset, step = self._scene_parameters(1, like)
         decoded: list[Tensor] = []
         string_index = 0
         start = 0
         for group_index, width in enumerate(self.group_sizes):
-            base = self._group_base(decoded, offset, start, width, points, group_index)
+            base = self._group_base(offset, start, width, points)
             group_step = step[:, start : start + width, None, None]
-            entropy = self._entropy(base_entropy, group_index)
             even_count = math.ceil(points / 2)
-            even_hat = entropy.decompress(
+            even_hat = self.group_entropies[group_index].decompress(
                 [packed.strings[string_index]], (1, even_count)
             )
             string_index += 1
@@ -650,13 +465,8 @@ class ContextualScoreEntropy(nn.Module):
             odd_base = base[..., 1::2] + self._spatial_prediction(
                 group_index, even_hat, base
             )
-            odd_hat = self._odd_decompress(
-                packed.strings[string_index],
-                (1, points // 2),
-                entropy,
-                group_index,
-                even_hat,
-                base,
+            odd_hat = self.spatial_odd_entropies[group_index].decompress(
+                [packed.strings[string_index]], (1, points // 2)
             )
             string_index += 1
             odd_hat = odd_base + group_step * odd_hat
@@ -664,24 +474,18 @@ class ContextualScoreEntropy(nn.Module):
             start += width
         return torch.cat(decoded, dim=1)
 
-    def update(
-        self,
-        base_entropy: FactorizedScoreEntropy,
-        *,
-        force: bool = False,
-        update_quantiles: bool = False,
-    ) -> bool:
+    def update(self, *, force: bool = False, update_quantiles: bool = False) -> bool:
         updated = False
-        for entropy in self.active_entropies(base_entropy):
+        for entropy in self.active_entropies():
             updated = (
                 entropy.update(force=force, update_quantiles=update_quantiles)
                 or updated
             )
         return updated
 
-    def aux_loss(self, base_entropy: FactorizedScoreEntropy) -> Tensor:
+    def aux_loss(self) -> Tensor:
         losses = [
             entropy.entropy_bottleneck.loss()
-            for entropy in self.active_entropies(base_entropy)
+            for entropy in self.active_entropies()
         ]
         return torch.stack(losses).sum()

@@ -220,35 +220,20 @@ class MechanismRunnerTests(unittest.TestCase):
         bash = Path("C:/Program Files/Git/bin/bash.exe")
         if not bash.exists():
             self.skipTest("Git Bash unavailable")
-        for name in ("analyze_nfcgs_mechanism.slurm", "analyze_nfcgs_legacy3_anchors.slurm",
-                     "analyze_nfcgs_hilbert_schedule_anchors.slurm"):
-            path = ROOT / "scripts/slurm" / name
-            data = path.read_bytes()
-            self.assertTrue(data.startswith(b"#!/usr/bin/env bash\n"))
-            self.assertNotIn(b"\r", data)
-            result = subprocess.run([str(bash), "-n", str(path)], capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
+        path = ROOT / "scripts/slurm/analyze_nfcgs_mechanism.slurm"
+        data = path.read_bytes()
+        self.assertTrue(data.startswith(b"#!/usr/bin/env bash\n"))
+        self.assertNotIn(b"\r", data)
+        result = subprocess.run([str(bash), "-n", str(path)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_slurm_plan_and_run_keep_protocol_and_create_job_tmpdir(self):
-        self.check_slurm_protocol(focused=False)
-
-    def test_focused_slurm_runs_four_model_scope_without_prediction_bypass(self):
-        self.check_slurm_protocol(focused=True)
-
-    def test_schedule_slurm_reuses_source_run_without_prediction_bypass(self):
-        self.check_slurm_protocol(focused=False, schedules=True)
-
-    def check_slurm_protocol(self, focused, schedules=False):
         bash = Path("C:/Program Files/Git/bin/bash.exe")
         if not bash.exists():
             self.skipTest("Git Bash unavailable")
         with tempfile.TemporaryDirectory() as folder:
             repo = Path(folder)
-            name = "analyze_nfcgs_legacy3_anchors.slurm" if focused else "analyze_nfcgs_mechanism.slurm"
-            prefix = "ANCHOR" if focused else "MECHANISM"
-            tmp_name = "l3_anchors" if focused else "mechanism"
-            if schedules:
-                name, prefix, tmp_name = "analyze_nfcgs_hilbert_schedule_anchors.slurm", "SCHEDULE", "hsched_anchors"
+            name, prefix, tmp_name = "analyze_nfcgs_mechanism.slurm", "MECHANISM", "mechanism"
             for relative in (f"scripts/slurm/{name}", "globalsplat/compression/mechanism.py",
                     "globalsplat/compression/score_context.py", "scripts/profile_nfcgs_complexity.py",
                     "scripts/analyze_nfcgs_mechanism.py", "scripts/report_nfcgs_mechanism.py"):
@@ -284,17 +269,7 @@ class MechanismRunnerTests(unittest.TestCase):
             planned_call = (repo / "calls.txt").read_text()
             for flag in ("--scenes 256", "--trace-scenes 8", "--plan"):
                 self.assertIn(flag, planned_call)
-            if schedules:
-                self.assertIn("--scope hilbert-schedule-anchors",planned_call)
-                self.assertIn("--input-run",planned_call)
-                self.assertIn("job_454995",planned_call)
-                self.assertIn("--expected-input-fingerprint 069b40a74daef588e7ac01be40231dce159bb304b588e7669c6f4801e4241f29",planned_call)
-                self.assertNotIn("--prediction-ablation",planned_call)
-            elif focused:
-                self.assertIn("--scope legacy3-anchors", planned_call)
-                self.assertNotIn("--prediction-ablation", planned_call)
-            else:
-                self.assertIn("--prediction-ablation", planned_call)
+            self.assertIn("--prediction-ablation", planned_call)
             env.update(SLURM_JOB_ID="12345")
             env.update({f"{prefix}_SCENES": "3", f"{prefix}_TRACE_SCENES": "2"})
             ran = shell("")
@@ -302,7 +277,7 @@ class MechanismRunnerTests(unittest.TestCase):
             self.assertTrue((repo / f"checkpoint_tmp/{tmp_name}_12345").is_dir())
             calls = (repo / "calls.txt").read_text().splitlines()
             self.assertEqual(len(calls), 3)
-            self.assertIn(f"--scenes {256 if schedules else 3} --trace-scenes 2", calls[1])
+            self.assertIn("--scenes 3 --trace-scenes 2", calls[1])
             self.assertIn("scripts/report_nfcgs_mechanism.py", calls[2])
             self.assertIn("report_12345", calls[2])
             self.assertEqual((repo / "tmp.txt").read_text().splitlines()[-2:],

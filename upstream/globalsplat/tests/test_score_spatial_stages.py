@@ -13,20 +13,17 @@ from globalsplat.compression.checkpoint import (
     convert_score_path_state, infer_config, load_feature_codec_checkpoint,
     resize_registered_buffers, validate_feature_codec_checkpoint,
 )
-from test_score_path_ablation import config, MINIMAL
+from codec_helpers import config
 
 
 def staged_codec(stages):
-    return ObservableLowRank1DCodec(config(
-        **MINIMAL, score_spatial_stages=stages, score_spatial_kernel=5,
-        score_context_quantization="ste",
-    ))
+    return ObservableLowRank1DCodec(config(score_spatial_stages=stages, score_spatial_kernel=5))
 
 
 def trained_predictors(codec):
     with torch.no_grad():
         for name, parameter in codec.score_context.named_parameters():
-            if "predictors" in name and "channel" not in name:
+            if "predictors" in name:
                 parameter.normal_(0, 0.1)
             if name.endswith("quantiles"):
                 parameter[:, 0, 1].fill_(0.27)
@@ -52,7 +49,6 @@ class SpatialStageTests(unittest.TestCase):
             trained_predictors(codec)
             context = codec.score_context
             scores = torch.randn(1, 7, 1, 17)
-            mean = torch.zeros(1, 12)
             inputs = {}
             handles = []
             def capture(key):
@@ -64,7 +60,7 @@ class SpatialStageTests(unittest.TestCase):
                                   ("D", getattr(context, "split_odd_predictors", []))):
                 for group, module in enumerate(modules):
                     handles.append(module.register_forward_pre_hook(capture((name, group))))
-            reconstruction, likelihood = context(scores, mean, codec.score_entropy, training=False)
+            reconstruction, likelihood = context(scores, training=False)
             for handle in handles:
                 handle.remove()
             previous = {"B": [0], "C": [0, 2], "D": [0, 2, 1]}
@@ -80,7 +76,7 @@ class SpatialStageTests(unittest.TestCase):
                     start += width
             changed = scores.clone()
             changed[..., 1::2] += 1000  # C/D cannot affect A/B values or rates.
-            other, other_likelihood = context(changed, mean, codec.score_entropy, training=False)
+            other, other_likelihood = context(changed, training=False)
             torch.testing.assert_close(reconstruction[..., 0::2], other[..., 0::2], rtol=0, atol=0)
             torch.testing.assert_close(likelihood[..., 0::2], other_likelihood[..., 0::2], rtol=0, atol=0)
 
@@ -101,7 +97,7 @@ class SpatialStageTests(unittest.TestCase):
         scores = torch.zeros(1, 7, 1, 9)
         scores[0, 0, 0, 4] = 2  # A4 is visible to B2.
         scores[0, 0, 0, 5] = 3  # C5 is visible to D3.
-        context(scores, torch.zeros(1, 12), codec.score_entropy, training=False)
+        context(scores, training=False)
         hb.remove(); hd.remove()
         self.assertEqual(observed["B"][0, 0, 0, 2].item(), 2)
         self.assertEqual(observed["D"][0, 0, 0, 3].item(), 3)
@@ -113,20 +109,19 @@ class SpatialStageTests(unittest.TestCase):
             codec.update(force=True)
             context = codec.score_context
             scores = torch.randn(1, 7, 1, 35, requires_grad=True)
-            mean = torch.zeros(1, 12)
-            reconstruction, likelihood = context(scores, mean, codec.score_entropy, training=True)
-            payload, encoded = context.compress(scores.detach(), mean, codec.score_entropy)
-            decoded = context.decompress(payload, mean, 35, codec.score_entropy)
+            reconstruction, likelihood = context(scores, training=True)
+            payload, encoded = context.compress(scores.detach())
+            decoded = context.decompress(payload, 35)
             torch.testing.assert_close(reconstruction, encoded, rtol=0, atol=1e-6)
             torch.testing.assert_close(encoded, decoded, rtol=0, atol=0)
             (reconstruction.square().mean() * .01 - torch.log2(likelihood).mean()).backward()
             self.assertTrue(torch.isfinite(scores.grad).all())
             self.assertGreater(scores.grad.abs().sum().item(), 0)
             for name, parameter in context.named_parameters():
-                if "predictors" in name and "channel" not in name:
+                if "predictors" in name:
                     self.assertIsNotNone(parameter.grad, name)
                     self.assertGreater(parameter.grad.abs().sum().item(), 0, name)
-            for entropy in context.active_entropies(codec.score_entropy):
+            for entropy in context.active_entropies():
                 gradients = [p.grad for n, p in entropy.named_parameters() if not n.endswith("quantiles")]
                 self.assertGreater(sum(g.abs().sum().item() for g in gradients if g is not None), 0)
 
@@ -138,10 +133,9 @@ class SpatialStageTests(unittest.TestCase):
             context = codec.score_context
             for points in (1, 2, 3, 4, 5, 17, 33):
                 scores = torch.randn(1, 7, 1, points)
-                mean = torch.zeros(1, 12)
-                expected, _ = context(scores, mean, codec.score_entropy, training=False)
-                payload, sender = context.compress(scores, mean, codec.score_entropy)
-                receiver = copy.deepcopy(context).decompress(payload, mean, points, codec.score_entropy)
+                expected, _ = context(scores, training=False)
+                payload, sender = context.compress(scores)
+                receiver = copy.deepcopy(context).decompress(payload, points)
                 torch.testing.assert_close(expected, sender, rtol=0, atol=0)
                 torch.testing.assert_close(sender, receiver, rtol=0, atol=0)
                 packed = ScoreContextBitstream.unpack(payload)
@@ -195,7 +189,7 @@ class SpatialStageTests(unittest.TestCase):
             self.assertEqual(infer_config(state, codec.config.to_dict()), codec.config)
             if stages > 2:
                 # Metadata cannot mislabel the tensor architecture.
-                with self.assertRaisesRegex(ValueError, "configuration mismatch"):
+                with self.assertRaisesRegex(ValueError, "state mismatch"):
                     infer_config(state, replace(codec.config, score_spatial_stages=2).to_dict())
 
     def test_standalone_bfloat16_receiver_and_checkpoint_metadata(self):
@@ -222,15 +216,14 @@ class SpatialStageTests(unittest.TestCase):
         codec = staged_codec(4).eval()
         codec.update(force=True)
         context = codec.score_context
-        mean = torch.zeros(1, 12)
-        payload, _ = context.compress(torch.zeros(1, 7, 1, 1), mean, codec.score_entropy)
+        payload, _ = context.compress(torch.zeros(1, 7, 1, 1))
         packed = ScoreContextBitstream.unpack(payload)
         with self.assertRaisesRegex(ValueError, "stream count"):
-            context.decompress(replace(packed, strings=packed.strings[:-1]).pack(), mean, 1, codec.score_entropy)
+            context.decompress(replace(packed, strings=packed.strings[:-1]).pack(), 1)
         bad = list(packed.strings)
         bad[len(context.group_sizes)] = b"bad"
         with self.assertRaisesRegex(ValueError, "empty token stage"):
-            context.decompress(replace(packed, strings=tuple(bad)).pack(), mean, 1, codec.score_entropy)
+            context.decompress(replace(packed, strings=tuple(bad)).pack(), 1)
 
 
 if __name__ == "__main__":

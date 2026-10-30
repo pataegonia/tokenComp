@@ -79,10 +79,7 @@ def load_spec(path):
     required = dict(texture_channels=512, geometry_channels=512, geometry_observable_channels=224,
                     rank=56, codec_mode="two_path", use_residual=True, token_order="hilbert",
                     score_context_schedule="dyadic4", score_spatial_stages=4,
-                    score_slice_channels=16, score_spatial_context=True,
-                    use_centering=False, use_score_norm=False, transform="linear",
-                    score_mean_condition=False, score_channel_context=False,
-                    score_spatial_kernel=5, score_context_quantization="ste")
+                    score_slice_channels=16, score_spatial_context=True, score_spatial_kernel=5)
     if any(getattr(config, key) != value for key, value in required.items()):
         raise ValueError("manifest must describe the current minimal Hilbert+D4 rank56 two-path method")
     if spec.get("tokens") != 4096 or spec.get("expected_step") not in SUPPORTED_STEPS:
@@ -373,7 +370,8 @@ def run(args, manifest, spec):
                     protocol=dict(scenes=args.scenes, tokens=args.tokens, seed=args.seed,
                                   precision=args.precision, context_views=12, target_views=8,
                                   image_shape=[256, 256], modes=FORMULAS, shared_sorted_order=True,
-                                  score_mean_offset_enabled=model.feature_codec.score_context.mean_offset_enabled,
+                                  # Constant since the cleanup; kept so T05 metadata stays comparable.
+                                  score_mean_offset_enabled=True,
                                   cdf_policy="force update on eval device, update_quantiles=False"),
                     numerics=dict(cudnn_version=torch.backends.cudnn.version(),
                                   cudnn_deterministic=torch.backends.cudnn.deterministic,

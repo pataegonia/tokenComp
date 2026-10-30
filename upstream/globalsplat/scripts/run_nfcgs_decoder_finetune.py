@@ -32,9 +32,9 @@ DECODER_LR = 1e-5
 
 def train_command(args):
     argv = ["train", "--checkpoint", str(args.source), "--output", str(args.run_dir),
-        "--dataset-root", str(args.dataset_root), "--rate-lambda", "0", "--score-path", "minimal",
+        "--dataset-root", str(args.dataset_root), "--rate-lambda", "0",
         "--token-order", "hilbert", "--score-context-schedule", "dyadic4", "--score-spatial-stages", "4",
-        "--score-spatial-kernel", "5", "--score-context-quantization", "ste", "--score-slice-channels", "16",
+        "--score-spatial-kernel", "5", "--score-slice-channels", "16",
         "--devices", "1", "--launcher", "python", "--scope", "all", "--lr", str(CODEC_LR), "--batch-size", "2",
         "--accumulate", "4", "--workers", "8", "--max-steps", str(STEPS), "--checkpoint-every", "10000"]
     command, _, _ = base.build_command(base.parse_args(argv))

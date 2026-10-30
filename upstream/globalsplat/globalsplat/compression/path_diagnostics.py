@@ -38,11 +38,9 @@ class DiagnosticPaths:
 
 def validate_codec(codec: ObservableLowRank1DCodec) -> None:
     cfg = codec.config
-    if (cfg.codec_mode != "two_path" or not cfg.use_residual or cfg.use_centering
-            or cfg.use_score_norm or cfg.score_mean_condition or cfg.score_channel_context
-            or cfg.transform != "linear" or codec.score_context is None
+    if (cfg.codec_mode != "two_path" or not cfg.use_residual or codec.score_context is None
             or codec.residual_codec is None):
-        raise ValueError("T05 requires the minimal, uncentered linear two-path codec")
+        raise ValueError("T05 requires the two-path codec")
     if codec.training:
         raise ValueError("diagnostics require a frozen codec in eval mode")
 
@@ -91,26 +89,21 @@ def build_paths(codec: ObservableLowRank1DCodec, texture: Tensor, geometry: Tens
     packed = codec.compress(texture, geometry, positions)
     scene = SceneBitstream.unpack(packed.data)
     features = packed.order.apply(codec._pack_features(texture, geometry))
-    # Reproduce the production subtraction, even though the minimal mean is 0.
-    encoder_mean = codec._scene_mean(features)
-    centered = features - encoder_mean[:, None, :]
-    s = codec._analyze_low_rank(centered)
+    s = codec._analyze_low_rank(features)
     continuous_lr = codec._synthesize_low_rank(s)
-    # Receiver mean is FP32 in a standard mixed-precision checkpoint.
-    receiver_mean = codec.shared_basis.new_zeros(1, features.shape[-1])
     with torch.autocast(device_type=features.device.type, enabled=False):
-        score_hat = codec.score_context.decompress(
-            scene.score, receiver_mean.float(), scene.points, codec.score_entropy)
-    score_hat = score_hat.squeeze(2).transpose(1, 2) * codec.score_scale[None, None, :]
+        score_hat = codec.score_context.decompress(scene.score, scene.points)
+    score_hat = score_hat.squeeze(2).transpose(1, 2)
     decoded_lr = codec._synthesize_low_rank(score_hat)
     actual = torch.cat(codec.decompress(packed.data), dim=-1)
     residual_hat = codec.residual_codec.decompress(scene.residual, output_width=scene.points)
     residual_hat = (residual_hat * codec.residual_std + codec.residual_mean).squeeze(2).transpose(1, 2)
-    reconstructed = receiver_mean[:, None, :] + decoded_lr + residual_hat
+    # The receiver widens the low-rank part to its FP32 parameters, as decompress does.
+    reconstructed = codec._promote(decoded_lr, codec.shared_basis) + residual_hat
     if not torch.equal(reconstructed, actual):
         raise RuntimeError("T05 decomposition differs from actual packet decoding")
-    continuous_residual = centered - continuous_lr
-    decoded_residual = centered - decoded_lr
+    continuous_residual = features - continuous_lr
+    decoded_residual = features - decoded_lr
     values = {
         "b1_direct": features,
         "lr_continuous": continuous_lr,

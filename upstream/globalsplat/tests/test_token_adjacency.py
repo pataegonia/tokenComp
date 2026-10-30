@@ -30,10 +30,8 @@ def make_codec():
     torch.manual_seed(11)
     config = CodecConfig(texture_channels=8, geometry_channels=8, geometry_observable_channels=4,
         rank=7, residual_n=6, residual_m=8, adapter_hidden=6, score_slice_channels=3,
-        score_context_hidden=5, score_spatial_stages=4, score_context_schedule="dyadic4",
-        score_spatial_kernel=5, score_context_quantization="ste", token_order="hilbert",
-        use_centering=False, use_score_norm=False, transform="linear",
-        score_mean_condition=False, score_channel_context=False)
+        score_spatial_stages=4, score_context_schedule="dyadic4",
+        score_spatial_kernel=5, token_order="hilbert")
     codec = ObservableLowRank1DCodec(config).eval()
     with torch.no_grad():  # observable geometry = first four geometry channels
         codec.geometry_projection.weight.zero_()

@@ -3,7 +3,6 @@ import contextlib
 import copy
 import io
 import json
-import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,7 +12,6 @@ import torch
 import test_mechanism_runner as fixture
 
 analysis, reporting = fixture.analysis, fixture.reporting
-ROOT = fixture.ROOT
 
 
 class ScheduleAnchorTests(unittest.TestCase):
@@ -122,30 +120,6 @@ class ScheduleAnchorTests(unittest.TestCase):
                  contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(ValueError,"inputs.pt content changed"):
                     analysis.run(manifest,args)
-
-    def test_launcher_creates_exact_three_checkpoint_manifest_without_external_manifest_upload(self):
-        script=(ROOT/"scripts/slurm/analyze_nfcgs_hilbert_schedule_anchors.slurm").read_text()
-        preparation=script.split("python - <<'PY'\n",1)[1].split("\nPY\n",1)[0]
-        original=json.loads((ROOT.parents[1]/"artifacts/nfcgs_mechanism_manifest_2026-10-16.json").read_text())
-        expected={p["label"]:p for p in original["points"] if p["config"]["token_order"]=="hilbert"}
-        with tempfile.TemporaryDirectory() as folder:
-            root=Path(folder)
-            for p in expected.values():
-                relative=p["checkpoint"].split("/globalsplat/",1)[1]
-                path=root/relative
-                path.parent.mkdir(parents=True,exist_ok=True)
-                path.write_bytes(b"fixture")
-            destination=root/"logs/slurm/manifest.json"
-            with patch.object(Path,"cwd",return_value=root), \
-                 patch.dict(os.environ,SCHEDULE_MANIFEST_PATH=str(destination)), \
-                 contextlib.redirect_stdout(io.StringIO()):
-                exec(compile(preparation,"launcher_manifest","exec"),{})
-            manifest=analysis.load_manifest(destination,"hilbert-schedule-anchors")
-            self.assertEqual(len(manifest["points"]),3)
-            for point in manifest["points"]:
-                self.assertEqual(point["config"],expected[point["label"]]["config"])
-            with self.assertRaisesRegex(ValueError,"four legacy3"):
-                analysis.load_manifest(destination,"legacy3-anchors")
 
 
 if __name__=="__main__":

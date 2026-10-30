@@ -161,9 +161,9 @@ def build_command(args, attempt=None):
     output = args.run_dir if train else eval_output(args)
     # The base parser's legacy whitelist is not the fresh sweep's lambda policy.
     argv = ["train" if train else "eval", "--checkpoint", str(checkpoint), "--output", str(output),
-        "--dataset-root", str(args.dataset_root), "--rate-lambda", "0", "--score-path", "minimal",
+        "--dataset-root", str(args.dataset_root), "--rate-lambda", "0",
         "--token-order", c.order, "--score-context-schedule", c.schedule, "--score-spatial-stages", str(c.stages),
-        "--score-spatial-kernel", "5", "--score-context-quantization", "ste", "--score-slice-channels", "16"]
+        "--score-spatial-kernel", "5", "--score-slice-channels", "16"]
     if not c.context:
         argv.append("--no-spatial-context")
     if c.backend != "legacy":

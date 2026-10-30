@@ -12,10 +12,8 @@ PILOT_ARMS = ("score56_only", "msh_only", "two_path56", "score736_only")
 
 
 def pilot_config(arm: str) -> CodecConfig:
-    base = CodecConfig(token_order="hilbert", use_centering=False, use_score_norm=False,
-                       transform="linear", score_mean_condition=False, score_channel_context=False,
-                       score_context_schedule="dyadic4", score_spatial_stages=4,
-                       score_spatial_kernel=5, score_context_quantization="ste")
+    base = CodecConfig(token_order="hilbert", score_context_schedule="dyadic4", score_spatial_stages=4,
+                       score_spatial_kernel=5)
     if arm == "two_path56":
         return base
     if arm == "score56_only":

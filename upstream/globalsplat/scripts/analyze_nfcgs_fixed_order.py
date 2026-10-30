@@ -88,24 +88,23 @@ def encode_fixed(codec, features, normalized_score, positions, permutation, *, s
     order = order_object(permutation)
     values = order.apply(features)
     score = order.apply(normalized_score).transpose(1,2).unsqueeze(2)
-    mean = codec._scene_mean(values)
     recorder = StageRecorder(score, order.apply(positions), keep_tensors=keep_tensors)
     # Identical diagnostic scales for all permutations, never coding inputs.
     recorder.scale = score_scale.detach().float().cpu()
     recorder.xyz_scale = xyz_scale.detach().float().cpu()
     with observe_stages(codec.score_context, recorder):
         with torch.autocast(device_type=score.device.type, enabled=False):
-            score_payload, score_hat = codec.score_context.compress(score.float(), mean.float(), codec.score_entropy)
-        shat = score_hat.squeeze(2).transpose(1,2)*codec.score_scale[None,None,:]
+            score_payload, score_hat = codec.score_context.compress(score.float())
+        shat = score_hat.squeeze(2).transpose(1,2)
         low_rank = codec._synthesize_low_rank(shat)
-        residual = (values-mean[:,None,:]-low_rank).transpose(1,2).unsqueeze(2)
+        residual = (values-low_rank).transpose(1,2).unsqueeze(2)
         residual = (residual-codec.residual_mean)/codec.residual_std.clamp_min(1e-8)
         residual_payload, _ = codec.residual_codec.compress(residual)
         packet = SceneBitstream(points=values.shape[1], channels=values.shape[2], rank=codec.config.rank,
             mean_fp16=b"", score=score_payload, residual=residual_payload, flags=codec.flags).pack()
         # Real receiver, without observing or replacing its causal context.
         with torch.autocast(device_type=score.device.type, enabled=False):
-            received = codec.score_context.decompress(score_payload, mean.float(), values.shape[1], codec.score_entropy)
+            received = codec.score_context.decompress(score_payload, values.shape[1])
         if not torch.equal(recorder.reconstruction, received[0,:,0].T.cpu()):
             raise RuntimeError("observed causal Score differs from receiver")
         decoded = torch.cat(codec.decompress(packet), -1).float()
@@ -135,7 +134,7 @@ def analyze_scene(model, inputs, args, scene, reference_sha, *, keep_tensors=Fal
         if texture.shape[:2] != (1,args.tokens):
             raise ValueError("unexpected token count")
         xyz = model.gaussian_decoder.decoded_token_centers(codec.project_geometry(geometry))
-        features, production_order, _, _, prepared_score = diag.profile.prepare_score(codec, texture, geometry, xyz)
+        features, production_order, _, prepared_score = diag.profile.prepare_score(codec, texture, geometry, xyz)
         # Analyze once in the exact production Hilbert layout, then restore rows.
         fixed_score = production_order.restore(prepared_score.squeeze(2).transpose(1,2))
         orders = permutations(xyz, scene=scene, bits=codec.config.morton_bits)

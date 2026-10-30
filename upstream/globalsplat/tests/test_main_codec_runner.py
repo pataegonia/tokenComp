@@ -47,7 +47,7 @@ class MainRunnerTests(unittest.TestCase):
     def test_middle_rd_rate_uses_explicit_checkpoint_in_train_and_eval(self):
         for mode in ("train", "eval"):
             args = runner.parse_args([mode, "--checkpoint", "rd.ckpt", "--rate-lambda", "0.0128",
-                "--score-path", "minimal", "--token-order", "hilbert", "--score-spatial-stages", "3"])
+                "--token-order", "hilbert", "--score-context-schedule", "legacy", "--score-spatial-stages", "3"])
             config = self.composed(args)
             self.assertEqual(config.loss.rate_lambda, .0128)
             self.assertTrue(config.checkpointing.load.endswith("rd.ckpt"))
@@ -68,9 +68,9 @@ class MainRunnerTests(unittest.TestCase):
         for (order, schedule, stages, channels, context), rate in points:
             for mode in ("train", "eval"):
                 argv = [mode, "--checkpoint", "rd.ckpt", "--rate-lambda", rate,
-                        "--score-path", "minimal", "--token-order", order,
+                        "--token-order", order,
                         "--score-context-schedule", schedule, "--score-spatial-stages", str(stages),
-                        "--score-spatial-kernel", "5", "--score-context-quantization", "ste",
+                        "--score-spatial-kernel", "5",
                         "--score-slice-channels", str(channels)]
                 if not context:
                     argv.append("--no-spatial-context")
@@ -86,10 +86,6 @@ class MainRunnerTests(unittest.TestCase):
                 self.assertEqual(codec.score_slice_channels, channels)
                 self.assertEqual(codec.score_spatial_context, context)
                 self.assertTrue(codec.use_residual)
-                self.assertFalse(codec.use_centering)
-                self.assertFalse(codec.use_score_norm)
-                self.assertFalse(codec.score_mean_condition)
-                self.assertFalse(codec.score_channel_context)
                 self.assertTrue(cfg.model.freeze_globalsplat)
                 if mode == "train":
                     self.assertEqual(cfg.trainer.max_steps, 50000)
@@ -134,32 +130,6 @@ class MainRunnerTests(unittest.TestCase):
         args = runner.parse_args(["train", "--checkpoint", "main.ckpt", "--resume"])
         self.assertTrue(self.composed(args).checkpointing.resume)
 
-    def test_mean_offset_ablation_is_explicit_and_eval_keeps_mode(self):
-        args = runner.parse_args(
-            [
-                "train", "--checkpoint", "main.ckpt", "--no-score-mean-offset",
-                "--reset-score-mean-offset",
-            ]
-        )
-        config = self.composed(args)
-        self.assertFalse(config.model.score_mean_offset_enabled)
-        self.assertTrue(config.checkpointing.allow_score_mean_offset_conversion)
-        self.assertTrue(config.checkpointing.reset_score_mean_offset)
-        args = runner.parse_args(
-            ["eval", "--checkpoint", "ablated.ckpt", "--no-score-mean-offset"]
-        )
-        config = self.composed(args)
-        self.assertFalse(config.model.score_mean_offset_enabled)
-        self.assertFalse(config.checkpointing.allow_score_mean_offset_conversion)
-        self.assertFalse(config.checkpointing.reset_score_mean_offset)
-        for argv in (
-            ["eval", "--reset-score-mean-offset"],
-            ["train", "--from-scratch", "--reset-score-mean-offset"],
-            ["train", "--checkpoint", "main.ckpt", "--resume", "--reset-score-mean-offset"],
-        ):
-            with self.subTest(argv=argv), self.assertRaises(SystemExit):
-                runner.parse_args(argv)
-
     def test_dry_run_never_starts_processes_or_creates_output(self):
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -170,37 +140,24 @@ class MainRunnerTests(unittest.TestCase):
             run.assert_not_called()
             self.assertFalse(output.exists())
 
-    def test_minimal_score_path_and_individual_switches(self):
+    def test_score_path_conversion_is_weights_only_training(self):
         args = runner.parse_args([
-            "train", "--checkpoint", "full.ckpt", "--score-path", "minimal",
+            "train", "--checkpoint", "full.ckpt",
             "--allow-score-path-conversion",
         ])
         config = self.composed(args)
         codec = CodecConfig.from_mapping(config.model.feature_codec)
-        self.assertFalse(codec.use_centering)
-        self.assertFalse(codec.use_score_norm)
-        self.assertFalse(codec.score_mean_condition)
-        self.assertFalse(codec.score_channel_context)
-        self.assertEqual(codec.transform, "linear")
         self.assertTrue(codec.use_residual)
         self.assertTrue(codec.score_spatial_context)
-        self.assertEqual(codec.score_spatial_entropy, "split")
         self.assertTrue(config.checkpointing.allow_score_path_conversion)
         self.assertTrue(config.model.freeze_globalsplat)
         args = runner.parse_args([
-            "eval", "--checkpoint", "minimal.ckpt", "--score-path", "minimal",
+            "eval", "--checkpoint", "minimal.ckpt",
         ])
         self.assertFalse(self.composed(args).checkpointing.allow_score_path_conversion)
-        args = runner.parse_args(["eval", "--no-centering"])
-        codec = CodecConfig.from_mapping(self.composed(args).model.feature_codec)
-        self.assertFalse(codec.score_mean_condition)
-        self.assertTrue(codec.score_channel_context)
-        self.assertTrue(codec.use_score_norm)
-        self.assertEqual(codec.transform, "nonlinear")
         for argv in (
             ["eval", "--allow-score-path-conversion"],
             ["train", "--checkpoint", "full.ckpt", "--resume", "--allow-score-path-conversion"],
-            ["eval", "--no-centering", "--mean-context"],
         ):
             with self.subTest(argv=argv), self.assertRaises(SystemExit):
                 runner.parse_args(argv)
@@ -213,7 +170,7 @@ class MainRunnerTests(unittest.TestCase):
         for mode in ("train","eval"):
             for schedule,stages in (("single",1),("dyadic4",4)):
                 with self.subTest(mode=mode,schedule=schedule):
-                    argv=[mode,"--checkpoint","parent.ckpt","--score-path","minimal",
+                    argv=[mode,"--checkpoint","parent.ckpt",
                         "--token-order","hilbert","--no-spatial-context","--score-context-schedule",schedule,
                         "--score-slice-channels","56","--score-spatial-kernel","5"]
                     if mode=="train":
@@ -223,23 +180,22 @@ class MainRunnerTests(unittest.TestCase):
                     self.assertEqual(codec.score_spatial_stages,stages)
                     self.assertEqual(codec.score_slice_channels,56)
                     self.assertFalse(codec.score_spatial_context)
-                    self.assertFalse(codec.score_channel_context)
                     self.assertTrue(codec.use_residual)
                     self.assertEqual(codec.token_order,"hilbert")
         for args in (["--score-context-schedule","single"], ["--score-spatial-stages","1"],
                      ["--score-slice-channels","0"],["--score-slice-channels","57"]):
             with self.assertRaises(SystemExit):
-                runner.parse_args(["eval","--score-path","minimal",*args])
+                runner.parse_args(["eval",*args])
 
     def test_sorting_and_spatial_context_can_be_disabled_independently(self):
         for order, enabled, schedule, stages in (("none", True, "legacy", 3), ("hilbert", False, "legacy", 3),
                                                   ("none", True, "quarter2", 2), ("none", True, "dyadic4", 4)):
             for mode in ("train", "eval"):
                 with self.subTest(order=order, mode=mode, schedule=schedule):
-                    argv = [mode, "--checkpoint", "parent.ckpt", "--score-path", "minimal",
+                    argv = [mode, "--checkpoint", "parent.ckpt",
                             "--token-order", order, "--score-context-schedule", schedule,
                             "--score-spatial-stages", str(stages),
-                            "--score-spatial-kernel", "5", "--score-context-quantization", "ste"]
+                            "--score-spatial-kernel", "5"]
                     if not enabled:
                         argv.append("--no-spatial-context")
                     if mode == "train":
@@ -251,15 +207,12 @@ class MainRunnerTests(unittest.TestCase):
                     self.assertEqual(codec.score_spatial_context, enabled)
                     self.assertEqual(codec.score_context_schedule, schedule)
                     self.assertEqual(codec.score_spatial_stages, stages)
-                    self.assertFalse(codec.score_mean_condition)
-                    self.assertFalse(codec.score_channel_context)
                     self.assertTrue(codec.use_residual)
-                    self.assertEqual(codec.score_spatial_entropy, "split")
 
     def test_nn_implementation_compose_and_resume_without_score_conversion(self):
         for mode in ("train", "eval"):
             argv = [mode, "--checkpoint", "nn.ckpt", "--token-order", "nn_score",
-                    "--score-path", "minimal", "--nn-order-backend", "knn",
+                    "--nn-order-backend", "knn",
                     "--nn-order-candidates", "65", "--nn-order-distance-device", "input"]
             if mode == "train":
                 argv.append("--resume")
@@ -280,7 +233,7 @@ class MainRunnerTests(unittest.TestCase):
         for order in ("morton", "hilbert", "nn_xyz", "nn_score"):
             for schedule, stages in (("legacy", 2), ("quarter2", 2), ("dyadic4", 4)):
                 args = runner.parse_args(["train", "--checkpoint", "full.ckpt",
-                    "--score-path", "minimal", "--allow-score-path-conversion",
+                    "--allow-score-path-conversion",
                     "--token-order", order, "--score-context-schedule", schedule])
                 composed = self.composed(args)
                 codec = CodecConfig.from_mapping(composed.model.feature_codec)
@@ -288,32 +241,8 @@ class MainRunnerTests(unittest.TestCase):
                 self.assertEqual(codec.score_context_schedule, schedule)
                 self.assertEqual(codec.score_spatial_stages, stages)
                 self.assertTrue(codec.use_residual)
-                self.assertFalse(codec.score_channel_context)
-                if schedule != "legacy":
-                    self.assertEqual(codec.score_context_quantization, "ste")
-        args = runner.parse_args(["eval", "--score-context-schedule", "quarter2"])
-        self.assertFalse(args.channel_context)
-        self.assertTrue(args.centering)
-        for argv in (
-            ["eval", "--score-context-schedule", "dyadic4", "--score-spatial-stages", "3"],
-            ["eval", "--score-context-schedule", "quarter2", "--channel-context"],
-            ["eval", "--score-context-schedule", "quarter2", "--dump-score-context"],
-        ):
-            with self.assertRaises(SystemExit):
-                runner.parse_args(argv)
-
-    def test_score_sort_calibration_is_saved_in_config(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "scale.json"
-            path.write_text(json.dumps([.5] * 56), encoding="utf-8")
-            args = runner.parse_args(["eval", "--token-order", "nn_score", "--score-order-scale", str(path)])
-            codec = CodecConfig.from_mapping(self.composed(args).model.feature_codec)
-            self.assertEqual(codec.score_order_scale, (.5,) * 56)
-            with self.assertRaises(SystemExit):
-                runner.parse_args(["eval", "--score-order-scale", str(path)])
-            path.write_text(json.dumps([0] * 56), encoding="utf-8")
-            with self.assertRaises(SystemExit):
-                runner.parse_args(["eval", "--token-order", "nn_score", "--score-order-scale", str(path)])
+        with self.assertRaises(SystemExit):
+            runner.parse_args(["eval", "--score-context-schedule", "dyadic4", "--score-spatial-stages", "3"])
 
     def test_scratch_has_no_checkpoint_and_trains_full_model_with_curriculum(self):
         args = runner.parse_args(["train", "--from-scratch"])

@@ -156,7 +156,7 @@ def main():
             hashes={key:tensor_hash(state[key]) for key in shared_keys}
             hashes.update({key:tensor_hash(model.state_dict()[key]) for key in _READOUTS})
             saved={"state_dict":{f"model.{k}":v.cpu() for k,v in model.state_dict().items()},
-                   "feature_codec_config":model.feature_codec.config.to_dict(),"score_mean_offset_enabled":True,
+                   "feature_codec_config":model.feature_codec.config.to_dict(),
                    "architecture_pilot_initialization":{"signature":arm_meta,"shared_tensor_sha256":hashes,
                                                         "observable_initialization":report.to_dict()}}
             validate_feature_codec_checkpoint(saved,pilot_config(arm))

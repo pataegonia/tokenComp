@@ -48,10 +48,8 @@ def load_manifest(path, scope="full"):
         found.add((cfg.token_order, cfg.score_context_schedule, cfg.score_spatial_stages))
         if spec["rate_lambda"] != .0128 or spec["expected_step"] != 50000 or spec["tokens"] != 4096:
             raise ValueError("this analysis requires lambda .0128, final50k, 4096 tokens")
-        if (cfg.use_centering or cfg.use_score_norm or cfg.score_mean_condition or cfg.score_channel_context
-                or cfg.transform != "linear" or not cfg.score_spatial_context or not cfg.use_residual
-                or cfg.rank != 56 or cfg.score_spatial_kernel != 5 or cfg.score_context_quantization != "ste"
-                or cfg.score_order_scale is not None):
+        if (not cfg.score_spatial_context or not cfg.use_residual
+                or cfg.rank != 56 or cfg.score_spatial_kernel != 5):
             raise ValueError("expected the current minimal/rank56/context-ON/MSH-ON checkpoints")
     if found != expected:
         raise ValueError("checkpoint comparison matrix is incomplete or duplicated")
@@ -137,7 +135,7 @@ def analyze_scene(model, inputs, args, *, scene, fixed_reference=False, keep_ten
         if texture.shape[:2] != (1, args.tokens):
             raise ValueError("unexpected token count")
         positions = model.gaussian_decoder.decoded_token_centers(codec.project_geometry(geometry))
-        features, order, mean, _, score = profile.prepare_score(codec, texture, geometry, positions)
+        features, order, _, score = profile.prepare_score(codec, texture, geometry, positions)
         ordered_xyz = order.apply(positions)
         result = dict(scene=scene, measurements={})
         raw = dict(score=score.detach().float().cpu(), xyz=ordered_xyz.detach().float().cpu(),
@@ -160,8 +158,7 @@ def analyze_scene(model, inputs, args, *, scene, fixed_reference=False, keep_ten
                     raise AssertionError("token order changed between preparation and coding")
                 # The receiver reruns the actual causal decoder, not the observer.
                 with torch.autocast(device_type=score.device.type, enabled=False):
-                    received = codec.score_context.decompress(SceneBitstream.unpack(packed.data).score,
-                        mean.float(), args.tokens, codec.score_entropy)
+                    received = codec.score_context.decompress(SceneBitstream.unpack(packed.data).score, args.tokens)
                 if not torch.equal(recorder.reconstruction, received[0, :, 0].T.cpu()):
                     raise AssertionError("observed and receiver-reconstructed scores differ")
                 decoded = torch.cat(codec.decompress(packed.data), -1).float()

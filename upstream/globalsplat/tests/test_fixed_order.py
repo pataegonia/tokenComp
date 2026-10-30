@@ -89,9 +89,8 @@ class FixedOrderTests(unittest.TestCase):
         row,packets,traces=runner.analyze_scene(model,inputs,args,"scene",reference,keep_tensors=True)
         for name,trace in traces.items():
             packet=runner.SceneBitstream.unpack(packets[name])
-            mean=torch.zeros(1,12)
             with torch.no_grad():
-                received=model.feature_codec.score_context.decompress(packet.score,mean,65,model.feature_codec.score_entropy)[0,:,0].T
+                received=model.feature_codec.score_context.decompress(packet.score,65)[0,:,0].T
             for group in trace["groups"]:
                 ref=group["references"];valid=group["reference_valid"]
                 start=group["start"];width=group["target"].shape[1]

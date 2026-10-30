@@ -123,10 +123,7 @@ def analyze_scene(model, inputs, args, scene):
         raise ValueError("unexpected scene token count")
     features = codec._pack_features(texture, geometry).float()
     xyz = model.gaussian_decoder.decoded_token_centers(features[..., codec.config.texture_channels:]).float()
-    mean = codec._scene_mean(features)
-    score = codec._analyze_low_rank(features - mean[:, None, :]) / codec.score_scale[None, None, :]
-    _, step = codec.score_context._scene_parameters(mean)
-    units = score / step[:, None, :]  # quantization-step units of the coded Score
+    units = codec._analyze_low_rank(features)  # the coded Score; its quantization step is 1
     width = codec.config.texture_channels
     signals = dict(xyz=xyz[0], features=features[0], texture=features[0, :, :width],
                    geometry=features[0, :, width:], score=units[0])

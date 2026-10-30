@@ -59,7 +59,6 @@ class GlobalSplat(nn.Module):
         feature_codec: Mapping[str, Any] | None = None,
         freeze_globalsplat: bool = False,
         feature_codec_train_scope: str = "all",
-        score_mean_offset_enabled: bool = True,
         train_decoder_readouts: bool = False,
         token_selection: Mapping[str, Any] | None = None,
     ):
@@ -164,10 +163,6 @@ class GlobalSplat(nn.Module):
         )
         self.freeze_globalsplat = bool(freeze_globalsplat)
         self.feature_codec_train_scope = str(feature_codec_train_scope)
-        if self.feature_codec is not None and self.feature_codec.score_context is not None:
-            self.feature_codec.score_context.mean_offset_enabled = bool(
-                score_mean_offset_enabled
-            )
         self.train_decoder_readouts = bool(train_decoder_readouts)
         if self.train_decoder_readouts and not self.freeze_globalsplat:
             raise ValueError("train_decoder_readouts reopens part of a frozen GlobalSplat")

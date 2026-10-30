@@ -15,14 +15,13 @@ from globalsplat.compression.checkpoint import (
     resize_registered_buffers, validate_feature_codec_checkpoint,
 )
 from globalsplat.compression.token_order import hilbert_codes_3d, greedy_neighbor_order
-from test_score_path_ablation import config, MINIMAL
+from codec_helpers import config
 
 
 def make_codec(schedule="legacy", order="morton", **kwargs):
     return ObservableLowRank1DCodec(config(
-        **MINIMAL, token_order=order, score_context_schedule=schedule,
-        score_spatial_stages=4 if schedule == "dyadic4" else 2,
-        score_context_quantization="ste", **kwargs,
+        token_order=order, score_context_schedule=schedule,
+        score_spatial_stages=4 if schedule == "dyadic4" else 2, **kwargs,
     ))
 
 
@@ -135,7 +134,7 @@ class TokenOrderContextTests(unittest.TestCase):
                     def capture(module, args, key=(stage, group)):
                         captured[key] = args[0].detach().clone()
                     handles.append(predictor.register_forward_pre_hook(capture))
-            output, likelihood = context(scores, torch.zeros(1, 12), codec.score_entropy, training=False)
+            output, likelihood = context(scores, training=False)
             for handle in handles:
                 handle.remove()
             visible = torch.zeros(33, dtype=torch.bool)
@@ -150,7 +149,7 @@ class TokenOrderContextTests(unittest.TestCase):
                     start += width
             changed = scores.clone()
             changed[..., partitions[-1][1]] += 1000
-            other, other_likelihood = context(changed, torch.zeros(1, 12), codec.score_entropy, training=False)
+            other, other_likelihood = context(changed, training=False)
             earlier = torch.cat([indices for _, indices in partitions[:-1]])
             torch.testing.assert_close(output[..., earlier], other[..., earlier], rtol=0, atol=0)
             torch.testing.assert_close(likelihood[..., earlier], other_likelihood[..., earlier], rtol=0, atol=0)
@@ -163,10 +162,9 @@ class TokenOrderContextTests(unittest.TestCase):
             context = codec.score_context
             for points in (1, 2, 3, 4, 5, 7, 9, 17, 33):
                 scores = torch.randn(1, 7, 1, points, requires_grad=True)
-                mean = torch.zeros(1, 12)
-                expected, likelihood = context(scores, mean, codec.score_entropy, training=True)
-                payload, sender = context.compress(scores.detach(), mean, codec.score_entropy)
-                receiver = copy.deepcopy(context).decompress(payload, mean, points, codec.score_entropy)
+                expected, likelihood = context(scores, training=True)
+                payload, sender = context.compress(scores.detach())
+                receiver = copy.deepcopy(context).decompress(payload, points)
                 torch.testing.assert_close(sender, receiver, rtol=0, atol=0)
                 torch.testing.assert_close(expected, sender, rtol=0, atol=1e-6)
                 self.assertEqual(sum(context.last_compress_stage_bytes.values()),
@@ -206,10 +204,12 @@ class TokenOrderContextTests(unittest.TestCase):
         source = ObservableLowRank1DCodec(config()).eval()
         source.update(force=True)
         old_metadata = source.config.to_dict()
-        for key in ("token_order", "score_order_scale", "score_context_schedule"):
+        for key in ("token_order", "score_context_schedule"):
             old_metadata.pop(key)
-        self.assertEqual(infer_config(source.state_dict(), old_metadata), source.config)
-        checkpoint = {"state_dict": source.state_dict(), "feature_codec_config": old_metadata}
+        # Fields missing from older metadata take the defaults of that time.
+        inferred = infer_config(source.state_dict(), old_metadata)
+        self.assertEqual((inferred.token_order, inferred.score_context_schedule), ("morton", "legacy"))
+        checkpoint = {"state_dict": source.state_dict(), "feature_codec_config": source.config.to_dict()}
         for schedule in ("quarter2", "dyadic4"):
             codec = make_codec(schedule, "hilbert")
             with self.assertRaisesRegex(ValueError, "configuration mismatch"):
@@ -222,12 +222,12 @@ class TokenOrderContextTests(unittest.TestCase):
                 if not name.startswith("score_context."):
                     torch.testing.assert_close(codec.state_dict()[name], tensor, rtol=0, atol=0)
             self.assertEqual(infer_config(state, codec.config.to_dict()), codec.config)
-            with self.assertRaisesRegex(ValueError, "configuration mismatch"):
+            with self.assertRaisesRegex(ValueError, "state mismatch"):
                 infer_config(state, replace(codec.config, score_context_schedule="legacy",
                     score_spatial_kernel=5).to_dict())
 
-    def test_value_order_keeps_mean_once_and_gradients_through_both_paths(self):
-        codec = make_codec("quarter2", "nn_score", score_order_scale=(1, 2, 3, 4, 5, 6, 7)).train()
+    def test_value_order_gradients_through_both_paths(self):
+        codec = make_codec("quarter2", "nn_score").train()
         trained_anchors(codec)
         inputs = tuple(torch.randn(2, 65, c, requires_grad=True) for c in (8, 8, 3))
         output = codec(*inputs, training=True)
@@ -235,12 +235,6 @@ class TokenOrderContextTests(unittest.TestCase):
         for parameter in (codec.shared_basis, codec.residual_codec.g_a[0].weight,
                           codec.score_context.anchor_predictors[0][0].weight):
             self.assertGreater(parameter.grad.abs().sum().item(), 0)
-        # Full centering uses one transmitted mean, independent of sorted reduction.
-        centered = ObservableLowRank1DCodec(config(token_order="nn_score")).eval()
-        centered.update(force=True)
-        inputs = tuple(torch.randn(1, 33, c) for c in (8, 8, 3))
-        torch.testing.assert_close(torch.cat(centered.decompress(centered.compress(*inputs).data), -1),
-                                   centered(*inputs, training=False).reconstruction_sorted, rtol=1e-5, atol=3e-6)
 
     def test_new_schedules_batch_4096_and_mixed_precision_sender(self):
         for schedule in ("quarter2", "dyadic4"):
@@ -270,12 +264,12 @@ class TokenOrderContextTests(unittest.TestCase):
         observed = []
         hook = context.spatial_predictors[0].register_forward_hook(
             lambda module, args, output: observed.append(output.detach().clone()))
-        expected, _ = context(scores, torch.zeros(1, 12), codec.score_entropy, training=False)
+        expected, _ = context(scores, training=False)
         hook.remove()
         self.assertEqual(observed[0][0, 0, 0, 1].item(), 2)
         codec.update(force=True)
-        payload, sender = context.compress(scores, torch.zeros(1, 12), codec.score_entropy)
-        decoded = context.decompress(payload, torch.zeros(1, 12), 17, codec.score_entropy)
+        payload, sender = context.compress(scores)
+        decoded = context.decompress(payload, 17)
         torch.testing.assert_close(sender, decoded, rtol=0, atol=0)
         torch.testing.assert_close(sender, expected, rtol=0, atol=0)
         self.assertEqual(infer_config(codec.state_dict(), codec.config.to_dict()), codec.config)

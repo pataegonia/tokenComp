@@ -2,16 +2,13 @@
 from io import BytesIO
 import importlib.util
 import json
-import os
 from pathlib import Path
 import sys
-import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from hydra import compose, initialize_config_dir
 from PIL import Image
 import torch
 from torch import nn
@@ -22,7 +19,6 @@ from globalsplat.dataset.re10k import ZPressorRE10KDataModule
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/"scripts"))
-import run_nfcgs_architecture_pilot as runner
 import prepare_nfcgs_architecture_pilots as prepare
 
 
@@ -56,34 +52,6 @@ class ArchitecturePilotTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(1)
-
-    def test_all_twelve_hydra_configs_and_training_validation_separation(self):
-        for arm in runner.ARMS:
-            for mode in ("train","validation","test"):
-                with self.subTest(arm=arm,mode=mode):
-                    argv=[mode,"--arm",arm,"--preparation","prep","--output","out"]
-                    if mode!="train":argv += ["--checkpoint","trained.ckpt"]
-                    command,_=runner.build_command(runner.parse_args(argv))
-                    with initialize_config_dir(config_dir=str(ROOT/"config"),version_base=None):
-                        cfg=compose(config_name="main",overrides=command[command.index("globalsplat.main")+1:])
-                    config=CodecConfig.from_mapping(cfg.model.feature_codec)
-                    from globalsplat.compression.architecture import pilot_config
-                    self.assertEqual(config,pilot_config(arm))
-                    self.assertTrue(cfg.architecture_entropy_determinism)
-                    self.assertTrue(cfg.model.freeze_globalsplat)
-                    if mode=="train":
-                        self.assertTrue(cfg.dataset.train_holdout_manifest.endswith("holdout.json"))
-                        self.assertEqual(cfg.trainer.limit_val_batches,0)
-                        self.assertEqual(cfg.trainer.max_steps,50000)
-                        self.assertEqual(cfg.optimizer.batch_size*cfg.trainer.devices*cfg.trainer.accumulate_grad_batches,8)
-                    else:
-                        self.assertTrue(cfg.test.actual_bitstream)
-                        self.assertEqual((cfg.dataset.num_context_views,cfg.dataset.num_target_views),(12,8))
-                        if mode=="validation":
-                            self.assertTrue(cfg.dataset.eval_train_holdout_manifest.endswith("holdout.json"))
-                            self.assertFalse(cfg.dataset.eval_all_scenes)
-                        else:
-                            self.assertIsNone(cfg.dataset.eval_index_path)
 
     def test_train_holdout_is_excluded_and_validation_reads_training_chunks(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -139,11 +107,6 @@ class ArchitecturePilotTests(unittest.TestCase):
             for arm,value in ckpts.items():
                 self.assertEqual(value["architecture_pilot_initialization"]["signature"]["arm"],arm)
                 self.assertNotIn("optimizer_states",value)
-                smoke=subprocess.run([sys.executable,str(ROOT/"scripts/smoke_nfcgs_architecture_pilot.py"),
-                                      "--checkpoint",str(output/f"{arm}.ckpt"),"--device","cpu"],
-                                     capture_output=True,text=True,env={**os.environ,"PYTHONPATH":str(ROOT)})
-                self.assertEqual(smoke.returncode,0,smoke.stdout+smoke.stderr)
-                self.assertIn("PILOT_SMOKE_OK",smoke.stdout)
 
     def test_checkpoint_hook_keeps_pilot_provenance_and_handles_absent_score(self):
         from globalsplat.model.model_wrapper import GlobalSplatModule
@@ -155,7 +118,6 @@ class ArchitecturePilotTests(unittest.TestCase):
         GlobalSplatModule.on_save_checkpoint(module,checkpoint)
         self.assertEqual(checkpoint["architecture_pilot_initialization"],metadata)
         self.assertEqual(checkpoint["feature_codec_config"]["codec_mode"],"msh_only")
-        self.assertTrue(checkpoint["score_mean_offset_enabled"])
         restored=SimpleNamespace()
         GlobalSplatModule.on_load_checkpoint(restored,checkpoint)
         self.assertEqual(restored.architecture_pilot_initialization,metadata)

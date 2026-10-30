@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import datetime
 import os
 from pathlib import Path
@@ -57,47 +56,25 @@ def parse_args(argv=None):
     )
     parser.add_argument("--workers", type=int)
     parser.add_argument("--scope", choices=("all", "score_probability"), default="all")
-    parser.add_argument(
-        "--score-path", choices=("full", "minimal"), default="full",
-        help="minimal disables centering, score norm, mean/channel context and MLPs; keeps MSH/spatial Split",
-    )
-    for flag in ("centering", "score-norm", "mean-context", "channel-context", "nonlinear"):
-        parser.add_argument(f"--{flag}", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--spatial-context", action=argparse.BooleanOptionalAction, default=True,
                         help="disable spatial prediction while retaining independent Split entropy models")
-    parser.add_argument("--token-order", choices=("none", "morton", "hilbert", "nn_xyz", "nn_score"), default="morton")
+    parser.add_argument("--token-order", choices=("none", "morton", "hilbert", "nn_xyz", "nn_score"), default="hilbert")
     parser.add_argument("--nn-order-backend", choices=("legacy", "row", "knn", "graph", "graph_gemm"),
                         default="legacy",
                         help="NN implementation only; knn requires numba and uses exact full-row fallback")
     parser.add_argument("--nn-order-candidates", type=int, default=64)
     parser.add_argument("--nn-order-distance-device", choices=("cpu", "input"), default="cpu",
                         help="input computes distances on the token device, in FP32; legacy requires cpu")
-    parser.add_argument("--score-order-scale", type=Path,
-                        help="JSON list of rank positive scales in quantization units for nn_score; default: scene mean absolute values")
     parser.add_argument("--score-order-metric", choices=("l1", "l2"), default="l1",
                         help="nn_score distance between normalized Scores")
-    parser.add_argument("--score-context-schedule", choices=("legacy", "quarter2", "dyadic4", "single"), default="legacy")
+    parser.add_argument("--score-context-schedule", choices=("legacy", "quarter2", "dyadic4", "single"), default="dyadic4")
     parser.add_argument("--score-spatial-stages", type=int, choices=(1, 2, 3, 4))
     parser.add_argument("--score-slice-channels", type=int, default=16,
                         help="channels per entropy stream; 56 encodes all Score channels together")
     parser.add_argument("--score-spatial-kernel", type=int, choices=(3, 5, 7))
     parser.add_argument(
-        "--score-context-quantization", choices=("noise", "ste"),
-        help="ste uses reconstructed quantized values in training; likelihoods retain the noise relaxation",
-    )
-    parser.add_argument(
         "--allow-score-path-conversion", action="store_true",
         help="allow score/order switch changes only for a weights-only training warm start",
-    )
-    parser.add_argument(
-        "--no-score-mean-offset",
-        action="store_true",
-        help="ablate b_mean while retaining mean-conditioned quantization step d",
-    )
-    parser.add_argument(
-        "--reset-score-mean-offset",
-        action="store_true",
-        help="zero the b_mean head after a weights-only load in both ablation arms",
     )
     parser.add_argument("--max-steps", type=int)
     parser.add_argument(
@@ -110,11 +87,6 @@ def parse_args(argv=None):
     parser.add_argument("--accumulate", type=int)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-scenes", type=int)
-    parser.add_argument(
-        "--dump-score-context",
-        action="store_true",
-        help="during eval, save score, mean-only/full-context residual, and b statistics",
-    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if not 1 <= args.score_slice_channels <= 56:
@@ -129,17 +101,6 @@ def parse_args(argv=None):
         args.mode != "train" or args.checkpoint is None or args.resume or args.from_scratch
     ):
         parser.error("--allow-score-path-conversion requires weights-only training from --checkpoint")
-    default_enabled = args.score_path == "full"
-    requested_mean_context = args.mean_context
-    requested_channel_context = args.channel_context
-    for name in ("centering", "score_norm", "mean_context", "channel_context", "nonlinear"):
-        if getattr(args, name) is None:
-            setattr(args, name, default_enabled)
-    if not args.centering:
-        # No scene mean can condition the decoder without a transmitted mean.
-        if requested_mean_context is True:
-            parser.error("--mean-context requires --centering")
-        args.mean_context = False
     if args.score_spatial_stages is None:
         args.score_spatial_stages = {"single": 1, "dyadic4": 4}.get(args.score_context_schedule, 2)
     if args.score_spatial_stages == 1 and args.score_context_schedule != "single":
@@ -150,35 +111,13 @@ def parse_args(argv=None):
         expected_stages = {"single": 1, "quarter2": 2, "dyadic4": 4}[args.score_context_schedule]
         if args.score_spatial_stages != expected_stages:
             parser.error(f"{args.score_context_schedule} requires {expected_stages} spatial stages")
-        if requested_channel_context is True:
-            parser.error("anchor schedules require --no-channel-context")
-        args.channel_context = False
     if args.score_order_metric != "l1" and args.token_order != "nn_score":
         parser.error("--score-order-metric requires --token-order nn_score")
-    args.score_order_scale_values = None
-    if args.score_order_scale is not None:
-        if args.token_order != "nn_score":
-            parser.error("--score-order-scale requires --token-order nn_score")
-        try:
-            from math import isfinite
-            values = json.loads(args.score_order_scale.read_text(encoding="utf-8"))
-            if not isinstance(values, list) or len(values) != 56 or any(
-                isinstance(v, bool) or not isinstance(v, (int, float)) or not isfinite(v) or v <= 0 for v in values
-            ):
-                raise ValueError("expected 56 finite positive numbers")
-            args.score_order_scale_values = values
-        except (OSError, ValueError) as error:
-            parser.error(f"invalid --score-order-scale: {error}")
     if args.score_spatial_kernel is None:
         args.score_spatial_kernel = 5 if args.score_spatial_stages > 2 else 3
-    if args.score_context_quantization is None:
-        args.score_context_quantization = "ste" if args.score_spatial_stages > 2 or args.score_context_schedule != "legacy" else "noise"
     if args.score_spatial_stages > 2 and args.score_context_schedule == "legacy":
-        if args.channel_context or args.score_spatial_kernel not in (5, 7):
-            parser.error("3/4 token stages require --no-channel-context (or --score-path minimal) and kernel 5 or 7")
-    if args.score_spatial_stages > 2 or args.score_context_schedule != "legacy":
-        if args.dump_score_context:
-            parser.error("staged/anchor contexts save stage bytes; even/odd b diagnostics require legacy 2 stages")
+        if args.score_spatial_kernel not in (5, 7):
+            parser.error("3/4 token stages require kernel 5 or 7")
     if args.from_scratch and (args.mode != "train" or args.checkpoint or args.resume):
         parser.error("--from-scratch requires train without --checkpoint or --resume")
     args.joint = args.joint or args.from_scratch
@@ -188,12 +127,6 @@ def parse_args(argv=None):
         parser.error("--resume is only valid for train")
     if args.mode == "eval" and args.rate_lambda not in ("0.0064", "0.0256") and args.checkpoint is None:
         parser.error(f"lambda {args.rate_lambda} has no pretrained FullSplit parent; eval requires --checkpoint")
-    if args.mode != "eval" and args.dump_score_context:
-        parser.error("--dump-score-context is only valid for eval")
-    if args.reset_score_mean_offset and (
-        args.mode != "train" or args.checkpoint is None or args.resume
-    ):
-        parser.error("--reset-score-mean-offset requires weights-only training")
     if args.mode == "eval" and args.devices != 1:
         parser.error("actual-bitstream evaluation requires --devices 1")
     if args.mode == "train" and args.checkpoint is None and not args.from_scratch:
@@ -252,7 +185,6 @@ def build_command(args):
         f"checkpointing.load={checkpoint.as_posix() if checkpoint else 'null'}",
         "checkpointing.auto_resume=false",
         f"loss.rate_lambda={args.rate_lambda}",
-        f"model.score_mean_offset_enabled={str(not args.no_score_mean_offset).lower()}",
         f"dataset.dataset_roots=[{dataset.as_posix()}]",
         f"dataset.mvsplat_root={(REPO / 'third_party/ZPressor/mvsplat').as_posix()}",
         f"trainer.precision={args.precision}",
@@ -262,24 +194,16 @@ def build_command(args):
             "ddp_find_unused_parameters_true" if args.devices > 1 else "auto"
         ),
         f"hydra.run.dir={(output / 'hydra').as_posix()}",
-        f"model.feature_codec.use_centering={str(args.centering).lower()}",
-        f"model.feature_codec.use_score_norm={str(args.score_norm).lower()}",
-        f"model.feature_codec.score_mean_condition={str(args.mean_context).lower()}",
-        f"model.feature_codec.score_channel_context={str(args.channel_context).lower()}",
         f"model.feature_codec.score_spatial_context={str(args.spatial_context).lower()}",
-        f"model.feature_codec.transform={'nonlinear' if args.nonlinear else 'linear'}",
         f"model.feature_codec.score_spatial_stages={args.score_spatial_stages}",
         f"model.feature_codec.score_slice_channels={args.score_slice_channels}",
         f"model.feature_codec.score_spatial_kernel={args.score_spatial_kernel}",
-        f"model.feature_codec.score_context_quantization={args.score_context_quantization}",
         f"model.feature_codec.token_order={args.token_order}",
         f"model.feature_codec.use_morton={str(args.token_order != 'none').lower()}",
         f"model.feature_codec.nn_order_backend={args.nn_order_backend}",
         f"model.feature_codec.nn_order_candidates={args.nn_order_candidates}",
         f"model.feature_codec.nn_order_distance_device={args.nn_order_distance_device}",
         f"model.feature_codec.score_context_schedule={args.score_context_schedule}",
-        "model.feature_codec.score_order_scale=" + (json.dumps(args.score_order_scale_values, separators=(",", ":"))
-                                                    if args.score_order_scale_values is not None else "null"),
     ]
     if args.score_order_metric != "l1":
         command.append(f"model.feature_codec.score_order_metric={args.score_order_metric}")
@@ -291,7 +215,6 @@ def build_command(args):
             "optimizer.batch_size=1",
             f"optimizer.num_workers={args.workers if args.workers is not None else 4}",
             "test.actual_bitstream=true",
-            f"test.score_context_diagnostics={str(args.dump_score_context).lower()}",
             "test.compute_scores=true",
             "test.save_image=false",
             "test.save_gt_image=false",
@@ -304,10 +227,6 @@ def build_command(args):
     else:
         if args.allow_score_path_conversion:
             command.append("checkpointing.allow_score_path_conversion=true")
-        if args.no_score_mean_offset and checkpoint is not None and not args.resume:
-            command.append("checkpointing.allow_score_mean_offset_conversion=true")
-        if args.reset_score_mean_offset:
-            command.append("checkpointing.reset_score_mean_offset=true")
         probability_only = args.scope == "score_probability"
         steps = args.max_steps or (
             500000 if args.joint else (10000 if probability_only else 50000)

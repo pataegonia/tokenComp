@@ -173,7 +173,7 @@ def evaluate_scene(native, reference, batch, args, render, metrics):
         # The SAME Hilbert order as T05, computed from the current geometry boundary.
         features = codec._pack_features(texture, geometry)
         positions = reference.gaussian_decoder.decoded_token_centers(codec.project_geometry(geometry))
-        ordered, order, _ = codec._ordered_features(features, positions)
+        ordered, order = codec._ordered_features(features, positions)
         native_sorted = native.decode_scene_tokens((order.apply(texture), order.apply(geometry)))
         b1 = reference.decode_scene_tokens((ordered[..., :codec.config.texture_channels],
                                             ordered[..., codec.config.texture_channels:]))

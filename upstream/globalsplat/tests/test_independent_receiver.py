@@ -45,10 +45,9 @@ class ReceiverTests(unittest.TestCase):
     def setUpClass(cls):
         torch.set_num_threads(1)
 
-    def fixture(self, directory, mean_offset=False):
+    def fixture(self, directory):
         root = Path(directory)
         codec = make_codec()
-        codec.score_context.mean_offset_enabled = mean_offset
         decoder = TokenCoarseToFine3DGS(C=8, geometry_C=4, sh_degree=3, M_max=16).eval()
         decoder.set_stage(3, mix=1.)
         checkpoint = root / "shared.ckpt"
@@ -57,7 +56,7 @@ class ReceiverTests(unittest.TestCase):
         state["model.scene_tokens"] = torch.randn(65,8)
         state["model.slot_encoder.unused"] = torch.tensor(99.)
         saved = dict(global_step=50000, feature_codec_config=codec.config.to_dict(),
-                     score_mean_offset_enabled=mean_offset, state_dict=state)
+                     score_mean_offset_enabled=True, state_dict=state)
         torch.save(saved, checkpoint)
         source = root / "source"
         source.mkdir()
@@ -70,7 +69,7 @@ class ReceiverTests(unittest.TestCase):
         config = codec.config.to_dict()
         spec = dict(checkpoint=str(checkpoint), tokens=65, expected_step=50000, config=config)
         manifest = dict(version=1, points=[spec])
-        meta = dict(protocol=dict(scenes=2, tokens=65, precision="fp32", score_mean_offset_enabled=mean_offset),
+        meta = dict(protocol=dict(scenes=2, tokens=65, precision="fp32", score_mean_offset_enabled=True),
             checkpoint=dict(sha256=runner.diag.file_hash(checkpoint), global_step=50000),
             environment=runner.diag.profile.environment(args), numerics=runner.numerical_policy())
         rows, batches = [], []
@@ -106,23 +105,22 @@ class ReceiverTests(unittest.TestCase):
             runner.prepare(args)
 
     def test_minimal_receiver_matches_production_decode_fp32_and_bf16(self):
-        for offset in (False,True):
-            with tempfile.TemporaryDirectory() as directory:
-                fixture = self.fixture(directory,offset)
-                args,_,spec,meta,rows,_,codec,decoder = fixture
-                metadata = dict(meta,config=spec["config"], decoder=dict(C=8,geometry_C=4,sh_degree=3,M_max=16,stage=3,mix=1.))
-                with patch.object(GlobalSplat,"__init__",side_effect=AssertionError("no scene encoder construction")):
-                    receiver = runner.load_receiver(args.checkpoint,metadata,"cpu")
-                self.assertEqual(set(dict(receiver.named_children())),{"codec","gaussian_decoder"})
-                self.assertFalse(hasattr(receiver,"scene_tokens"))
-                payload = (args.path_run/rows[0]["packet_file"]).read_bytes()
-                for mixed in (False,True):
-                    with torch.no_grad(),torch.autocast("cpu",dtype=torch.bfloat16,enabled=mixed):
-                        expected_tokens = codec.decompress(payload)
-                        expected = GlobalSplat._decode_scene_tokens(SimpleNamespace(gaussian_decoder=decoder),expected_tokens)
-                        actual_tokens,actual = receiver.decode(payload)
-                    for a,b in zip(expected_tokens,actual_tokens): self.assertTrue(torch.equal(a,b))
-                    for key in runner.GAUSSIAN_FIELDS: self.assertTrue(torch.equal(getattr(expected,key),getattr(actual,key)),key)
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            args,_,spec,meta,rows,_,codec,decoder = fixture
+            metadata = dict(meta,config=spec["config"], decoder=dict(C=8,geometry_C=4,sh_degree=3,M_max=16,stage=3,mix=1.))
+            with patch.object(GlobalSplat,"__init__",side_effect=AssertionError("no scene encoder construction")):
+                receiver = runner.load_receiver(args.checkpoint,metadata,"cpu")
+            self.assertEqual(set(dict(receiver.named_children())),{"codec","gaussian_decoder"})
+            self.assertFalse(hasattr(receiver,"scene_tokens"))
+            payload = (args.path_run/rows[0]["packet_file"]).read_bytes()
+            for mixed in (False,True):
+                with torch.no_grad(),torch.autocast("cpu",dtype=torch.bfloat16,enabled=mixed):
+                    expected_tokens = codec.decompress(payload)
+                    expected = GlobalSplat._decode_scene_tokens(SimpleNamespace(gaussian_decoder=decoder),expected_tokens)
+                    actual_tokens,actual = receiver.decode(payload)
+                for a,b in zip(expected_tokens,actual_tokens): self.assertTrue(torch.equal(a,b))
+                for key in runner.GAUSSIAN_FIELDS: self.assertTrue(torch.equal(getattr(expected,key),getattr(actual,key)),key)
 
     def test_portable_bundle_receive_without_dataset_source_or_encoder(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -191,7 +189,7 @@ class ReceiverTests(unittest.TestCase):
                 meta,_=runner.load_bundle(args.bundle)
                 saved=torch.load(args.checkpoint,weights_only=False)
                 if variant=="decoder":del saved["state_dict"]["model.gaussian_decoder.geo_pos_readout.weight"]
-                elif variant=="offset":saved["score_mean_offset_enabled"]=True
+                elif variant=="offset":saved["score_mean_offset_enabled"]=False
                 else:saved["unused"]=1
                 torch.save(saved,args.checkpoint)
                 if variant!="hash":meta["checkpoint"]["sha256"]=runner.diag.file_hash(args.checkpoint)
