@@ -90,8 +90,6 @@ class MainCodecTests(unittest.TestCase):
         self.assertEqual((config.rank, config.transform_hidden), (56, 32))
         for key, value in {
             "use_residual": False,
-            "use_morton": False,
-            "score_spatial_context": False,
             "score_spatial_predictor": "residual7",
             "score_spatial_entropy": "shared",
         }.items():

@@ -1,0 +1,21 @@
+Installed Lightning 2.3.0
+    @override
+    def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        self._last_time_checked = time.monotonic()
+
+def _atomic_save(checkpoint: Dict[str, Any], filepath: Union[str, Path]) -> None:
+    """Saves a checkpoint atomically, avoiding the creation of incomplete checkpoints.
+
+    Args:
+        checkpoint: The object to save.
+            Built to be used with the ``dump_checkpoint`` method, but can deal with anything which ``torch.save``
+            accepts.
+        filepath: The path to which the checkpoint will be saved.
+            This points to the file that the checkpoint will be stored in.
+
+    """
+    bytesbuffer = io.BytesIO()
+    log.debug(f"Saving checkpoint: {filepath}")
+    torch.save(checkpoint, bytesbuffer)
+    with fsspec.open(filepath, "wb") as f:
+        f.write(bytesbuffer.getvalue())

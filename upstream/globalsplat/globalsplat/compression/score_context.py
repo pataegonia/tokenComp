@@ -41,7 +41,8 @@ class ContextualScoreEntropy(nn.Module):
 
     Channel groups are decoded serially, but every token within a group is
     processed in parallel. Spatial context uses two, three or four passes over
-    ordered tokens, avoiding a token-by-token autoregressive decoder.
+    ordered tokens, avoiding a token-by-token autoregressive decoder. The
+    Context-OFF single schedule codes all tokens in one unpredicted pass.
     """
 
     FLAG_MEAN = 1 << 0
@@ -55,16 +56,18 @@ class ContextualScoreEntropy(nn.Module):
     FLAG_KERNEL7 = 1 << 10
     FLAG_QUARTER2 = 1 << 11
     FLAG_DYADIC4 = 1 << 12
+    FLAG_SINGLE = 1 << 13
     KNOWN_FLAGS = (
         FLAG_MEAN | FLAG_CHANNEL | FLAG_SPATIAL
         | FLAG_SPATIAL_ENTROPY_SPLIT | FLAG_NO_MEAN_OFFSET
         | FLAG_THREE_STAGES | FLAG_FOUR_STAGES | FLAG_KERNEL5 | FLAG_KERNEL7
-        | FLAG_QUARTER2 | FLAG_DYADIC4
+        | FLAG_QUARTER2 | FLAG_DYADIC4 | FLAG_SINGLE
     )
 
     def __init__(
         self, *, rank: int, scene_channels: int, slice_channels: int, hidden: int,
         mean_condition: bool = True, channel_context: bool = True,
+        spatial_context: bool = True,
         spatial_stages: int = 2, spatial_kernel: int = 3,
         context_quantization: str = "noise",
         context_schedule: str = "legacy",
@@ -75,18 +78,23 @@ class ContextualScoreEntropy(nn.Module):
         self.slice_channels = int(slice_channels)
         self.mean_condition = mean_condition
         self.channel_context = channel_context
+        self.spatial_context = spatial_context
         self.spatial_stages = spatial_stages
         self.spatial_kernel = spatial_kernel
         self.context_quantization = context_quantization
         self.context_schedule = context_schedule
-        if spatial_stages not in (2, 3, 4) or spatial_kernel not in (3, 5, 7):
+        if spatial_stages not in (1, 2, 3, 4) or spatial_kernel not in (3, 5, 7):
             raise ValueError("unsupported spatial stage count or kernel")
         if context_quantization not in ("noise", "ste"):
             raise ValueError("context_quantization must be noise or ste")
-        if context_schedule not in ("legacy", "quarter2", "dyadic4"):
+        if context_schedule not in ("legacy", "quarter2", "dyadic4", "single"):
             raise ValueError("unsupported context schedule")
+        if spatial_stages == 1 and context_schedule != "single":
+            raise ValueError("one token stage requires single schedule")
+        if context_schedule == "single" and spatial_context:
+            raise ValueError("single requires spatial_context=false")
         if context_schedule != "legacy":
-            if spatial_stages != (2 if context_schedule == "quarter2" else 4) or channel_context:
+            if spatial_stages != {"single": 1, "quarter2": 2, "dyadic4": 4}[context_schedule] or channel_context:
                 raise ValueError("anchor schedules require matching stage count and no channel context")
         elif spatial_stages > 2 and (channel_context or spatial_kernel not in (5, 7)):
             raise ValueError("3/4 spatial stages require no channel context and kernel 5 or 7")
@@ -135,7 +143,7 @@ class ContextualScoreEntropy(nn.Module):
             for width in self.group_sizes:
                 self.split_odd_predictors.append(self._make_predictor(width, spatial_kernel))
                 self.split_odd_entropies.append(FactorizedScoreEntropy(width))
-        if context_schedule != "legacy":
+        if context_schedule in ("quarter2", "dyadic4"):
             spacings = (4,) if context_schedule == "quarter2" else (8, 4, 2)
             self.anchor_predictors = nn.ModuleList(
                 nn.ModuleList(AnchorPairPredictor(width, spacing,
@@ -146,12 +154,19 @@ class ContextualScoreEntropy(nn.Module):
             for name in ("spatial_predictors", "split_even_predictors", "split_odd_predictors"):
                 for parameter in getattr(self, name, nn.ModuleList()).parameters():
                     parameter.requires_grad_(False)
+        if context_schedule == "single":
+            # Explicit architecture marker: inactive compatibility modules alone
+            # cannot distinguish this checkpoint from legacy two-stage state.
+            self.register_buffer("single_block_marker", torch.tensor(1, dtype=torch.uint8))
         # Evaluation diagnostics are opt-in so normal training/coding does not
         # pay for GPU reductions or device-to-host copies.
         self.mean_offset_enabled = True
         self.capture_diagnostics = False
         self.last_compress_diagnostics: dict[str, object] | None = None
         self.last_compress_stage_bytes: dict[str, int] | None = None
+        # Analysis-only callback; receives the exact causal tensors used by the
+        # staged encoder. No copies/reductions/state changes when unset.
+        self.stage_observer = None
 
     @staticmethod
     def _make_predictor(width: int, kernel: int):
@@ -167,7 +182,8 @@ class ContextualScoreEntropy(nn.Module):
             flags |= self.FLAG_MEAN
         if self.channel_context:
             flags |= self.FLAG_CHANNEL
-        flags |= self.FLAG_SPATIAL
+        if self.spatial_context:
+            flags |= self.FLAG_SPATIAL
         flags |= self.FLAG_SPATIAL_ENTROPY_SPLIT
         if not self.mean_offset_enabled:
             flags |= self.FLAG_NO_MEAN_OFFSET
@@ -183,6 +199,8 @@ class ContextualScoreEntropy(nn.Module):
             flags |= self.FLAG_QUARTER2
         elif self.context_schedule == "dyadic4":
             flags |= self.FLAG_DYADIC4
+        elif self.context_schedule == "single":
+            flags |= self.FLAG_SINGLE
         return flags
 
     def _entropy(
@@ -194,6 +212,8 @@ class ContextualScoreEntropy(nn.Module):
         self, base_entropy: FactorizedScoreEntropy
     ) -> Iterable[FactorizedScoreEntropy]:
         even = tuple(self.group_entropies)
+        if self.context_schedule == "single":
+            return even
         active = even + tuple(self.spatial_odd_entropies)
         if self.spatial_stages >= 3:
             active += tuple(self.split_even_entropies)
@@ -213,6 +233,8 @@ class ContextualScoreEntropy(nn.Module):
 
     def stage_indices(self, points: int, device):
         indices = torch.arange(points, device=device)
+        if self.context_schedule == "single":
+            return (("all", indices),)
         if self.context_schedule == "quarter2":
             return (("anchors", indices[0::4]), ("remaining", indices[indices % 4 != 0]))
         if self.context_schedule == "dyadic4":
@@ -267,6 +289,8 @@ class ContextualScoreEntropy(nn.Module):
             start, byte_count = 0, 0
             for group, width in enumerate(self.group_sizes):
                 entropy, predictor = self._stage_modules(stage, group)
+                if not self.spatial_context:
+                    predictor = None
                 group_base = base[:, start:start + width]
                 if isinstance(predictor, AnchorPairPredictor):
                     prediction = group_base.index_select(3, indices) + predictor(
@@ -302,6 +326,16 @@ class ContextualScoreEntropy(nn.Module):
                     else:
                         value, likelihood = self._entropy_forward(entropy, symbols, training=training)
                 reconstructed_groups.append(prediction + group_step * value)
+                if mode == "encode" and self.stage_observer is not None and indices.numel():
+                    self.stage_observer(dict(
+                        stage=stage, name=name, group=group, start=start, width=width,
+                        indices=indices, visible=visible, context=context[:, start:start + width],
+                        baseline=base[:, start:start + width].index_select(3, indices),
+                        predictor=predictor, prediction=prediction, target=target,
+                        symbols=symbols, reconstruction=reconstructed_groups[-1],
+                        step=group_step, entropy=entropy, raw_bytes=len(payload),
+                        coding_padding=coding_points - indices.numel(),
+                    ))
                 if mode == "forward":
                     likelihood_groups.append(likelihood)
                 else:
@@ -366,6 +400,8 @@ class ContextualScoreEntropy(nn.Module):
     def _spatial_prediction(
         self, group_index: int, anchor_hat: Tensor, base: Tensor
     ) -> Tensor:
+        if not self.spatial_context:
+            return torch.zeros_like(base[..., 1::2])
         anchor_delta = self._spatial_anchor_delta(anchor_hat, base)
         prediction = self.spatial_predictors[group_index](anchor_delta)
         return prediction[..., 1::2]

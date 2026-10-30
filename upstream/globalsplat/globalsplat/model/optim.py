@@ -11,7 +11,7 @@ matrices; norms, biases, and the embedding-like banks are excluded.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Mapping
 
 import torch
 import torch.nn as nn
@@ -59,6 +59,7 @@ def build_param_groups(
     *,
     no_decay_names: Iterable[str] = _NO_DECAY_PARAM_NAMES,
     decay_biases: bool = False,
+    lr_overrides: Mapping[str, float] | None = None,
 ) -> List[Dict[str, Any]]:
     """Split a module's *trainable* params into decay / no-decay groups.
 
@@ -74,33 +75,43 @@ def build_param_groups(
     Frozen params (e.g. the VGG/LPIPS perceptual nets) are skipped entirely so
     they never enter the optimizer state.
 
+    ``lr_overrides`` maps parameter-name prefixes to their own learning rate;
+    matching params get separate groups after the default ones, which keeps the
+    default groups and their order unchanged when no override is given.
+
     Returns a list suitable for ``torch.optim.AdamW(param_groups, lr=...)``.
     """
     no_decay_names = set(no_decay_names)
     norm_ids = _norm_param_ids(module)
+    overrides = dict(lr_overrides or {})
 
-    decay: List[nn.Parameter] = []
-    no_decay: List[nn.Parameter] = []
+    # (override prefix or None, decayed?) -> params, in first-seen order
+    buckets: Dict[tuple, List[nn.Parameter]] = {(None, True): [], (None, False): []}
 
     for name, p in module.named_parameters():
         if not p.requires_grad:
             continue
         leaf = name.split(".")[-1]
+        prefix = next((key for key in overrides if name.startswith(key)), None)
 
         if id(p) in norm_ids or leaf in no_decay_names:
-            no_decay.append(p)            # norm affine params + embedding banks
+            decayed = False               # norm affine params + embedding banks
         elif leaf == "bias":
-            (decay if decay_biases else no_decay).append(p)
+            decayed = decay_biases
         elif p.ndim <= 1:
-            no_decay.append(p)            # stray 1-D gains / scales
+            decayed = False               # stray 1-D gains / scales
         else:
-            decay.append(p)               # the 2-D Linear/Conv weights
+            decayed = True                # the 2-D Linear/Conv weights
+        buckets.setdefault((prefix, decayed), []).append(p)
 
     groups: List[Dict[str, Any]] = []
-    if decay:
-        groups.append({"params": decay, "weight_decay": float(weight_decay)})
-    if no_decay:
-        groups.append({"params": no_decay, "weight_decay": 0.0})
+    for (prefix, decayed), params in buckets.items():
+        if not params:
+            continue
+        group: Dict[str, Any] = {"params": params, "weight_decay": float(weight_decay) if decayed else 0.0}
+        if prefix is not None:
+            group["lr"] = float(overrides[prefix])
+        groups.append(group)
     return groups
 
 
@@ -119,6 +130,7 @@ def build_optimizer_and_scheduler(
     optimizer_name: str = "adamw",
     lr_milestones: Iterable[int] = (),
     lr_gamma: float = 0.1,
+    lr_overrides: Mapping[str, float] | None = None,
 ) -> Dict[str, Any]:
     """Build AdamW + a warmup -> cosine schedule in Lightning's return format.
 
@@ -138,7 +150,7 @@ def build_optimizer_and_scheduler(
     optimizer_cls = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW}.get(optimizer_name)
     if optimizer_cls is None:
         raise ValueError(f"Unsupported optimizer {optimizer_name!r}; expected adam or adamw")
-    param_groups = build_param_groups(module, weight_decay)
+    param_groups = build_param_groups(module, weight_decay, lr_overrides=lr_overrides)
     try:
         opt = optimizer_cls(param_groups, lr=lr, fused=use_fused)
     except (RuntimeError, ValueError):

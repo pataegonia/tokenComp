@@ -15,7 +15,7 @@ def main() -> None:
     args = parser.parse_args()
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     # Evaluation consumes the integrated GlobalSplat state, not a codec-only artifact.
-    if "model.feature_codec.shared_basis" not in checkpoint.get(
+    if "model.feature_codec.geometry_projection.weight" not in checkpoint.get(
         "state_dict", checkpoint
     ):
         raise ValueError(

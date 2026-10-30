@@ -107,6 +107,8 @@ class UpstreamBackedDataModule(pl.LightningDataModule):
         pin_memory: bool = True,
         prefetch_factor: int = 2,
         resumable_loader: bool = False,
+        train_holdout_manifest: str | None = None,
+        eval_train_holdout_manifest: str | None = None,
     ):
         super().__init__()
         self._dm = upstream_dm
@@ -117,6 +119,8 @@ class UpstreamBackedDataModule(pl.LightningDataModule):
         # Opt-in exact mid-epoch resume: use a stateful, fast-forwarding train
         # loader + per-epoch-deterministic shuffle (see ResumableDataLoader).
         self._resumable_loader = bool(resumable_loader)
+        self._train_holdout_manifest = train_holdout_manifest
+        self._eval_train_holdout_manifest = eval_train_holdout_manifest
         # Step the run is resuming from (0 = fresh). Restored from the checkpoint
         # via ``load_state_dict`` so the data schedule (StepTracker warm-up + the
         # train shuffle stream) continues instead of restarting from step 0.
@@ -181,8 +185,28 @@ class UpstreamBackedDataModule(pl.LightningDataModule):
         updm = importlib.import_module("src.dataset.data_module")
 
         dm = self._dm
+        if stage == "val" and self._train_holdout_manifest:
+            raise ValueError("architecture pilots disable the default val loader; run explicit train-holdout evaluation")
         loader_cfg = getattr(dm.data_loader_cfg, stage)
         dataset = get_dataset(dm.dataset_cfg, stage, dm.step_tracker)
+        manifest_path = self._train_holdout_manifest if stage == "train" else self._eval_train_holdout_manifest if stage == "test" else None
+        if manifest_path:
+            from .holdout import read_holdout, train_chunk_path, ExcludingViewSampler
+            if len(dm.dataset_cfg.roots) != 1:
+                raise ValueError("architecture holdout requires one RE10K root")
+            root = dm.dataset_cfg.roots[0]
+            holdout = read_holdout(manifest_path, root)
+            if stage == "train":
+                dataset.view_sampler = ExcludingViewSampler(dataset.view_sampler, holdout["scenes"])
+            else:
+                # Keep test-stage deterministic loading/sharding, but explicitly
+                # source the frozen training chunks instead of test chunks.
+                dataset.chunks = sorted({train_chunk_path(root, item["chunk"]) for item in holdout["scenes"].values()})
+                expected = {name: {"context":item["context"], "target":item["target"]} for name,item in holdout["scenes"].items()}
+                index_path = dm.dataset_cfg.view_sampler.index_path
+                import json
+                if json.loads(Path(index_path).read_text()) != expected:
+                    raise ValueError("validation frame index differs from frozen holdout manifest")
         dataset = dm.dataset_shim(dataset, stage)
 
         if stage == "val":  # upstream limits validation to one batch per scene
@@ -337,6 +361,8 @@ def build_re10k(
     prefetch_factor: int = 2,
     resumable_loader: bool = False,
     global_rank: int = 0,
+    train_holdout_manifest: str | None = None,
+    eval_train_holdout_manifest: str | None = None,
 ):
     dm_mod, ds_mod, st_mod = _import_upstream(mvsplat_root, "ZPressor/MVSplat")
     DatasetRE10kCfg = ds_mod.DatasetRE10kCfg
@@ -412,6 +438,8 @@ def build_re10k(
         upstream, step_tracker, scene_scale_factor,
         pin_memory=pin_memory, prefetch_factor=prefetch_factor,
         resumable_loader=resumable_loader,
+        train_holdout_manifest=train_holdout_manifest,
+        eval_train_holdout_manifest=eval_train_holdout_manifest,
     )
 
 

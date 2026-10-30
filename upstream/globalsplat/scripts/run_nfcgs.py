@@ -30,7 +30,8 @@ def baseline_checkpoint(rate: str) -> Path:
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("train", "eval"))
-    parser.add_argument("--rate-lambda", choices=("0.0064", "0.0128", "0.0256"), default="0.0256")
+    parser.add_argument("--rate-lambda", choices=("0", "0.0032", "0.0064", "0.0128", "0.0256", "0.0512"), default="0.0256",
+                        help="coefficient of the rate term; 0 retains quantization/coding without the rate penalty")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument(
         "--from-scratch",
@@ -62,11 +63,23 @@ def parse_args(argv=None):
     )
     for flag in ("centering", "score-norm", "mean-context", "channel-context", "nonlinear"):
         parser.add_argument(f"--{flag}", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--token-order", choices=("morton", "hilbert", "nn_xyz", "nn_score"), default="morton")
+    parser.add_argument("--spatial-context", action=argparse.BooleanOptionalAction, default=True,
+                        help="disable spatial prediction while retaining independent Split entropy models")
+    parser.add_argument("--token-order", choices=("none", "morton", "hilbert", "nn_xyz", "nn_score"), default="morton")
+    parser.add_argument("--nn-order-backend", choices=("legacy", "row", "knn", "graph", "graph_gemm"),
+                        default="legacy",
+                        help="NN implementation only; knn requires numba and uses exact full-row fallback")
+    parser.add_argument("--nn-order-candidates", type=int, default=64)
+    parser.add_argument("--nn-order-distance-device", choices=("cpu", "input"), default="cpu",
+                        help="input computes distances on the token device, in FP32; legacy requires cpu")
     parser.add_argument("--score-order-scale", type=Path,
                         help="JSON list of rank positive scales in quantization units for nn_score; default: scene mean absolute values")
-    parser.add_argument("--score-context-schedule", choices=("legacy", "quarter2", "dyadic4"), default="legacy")
-    parser.add_argument("--score-spatial-stages", type=int, choices=(2, 3, 4))
+    parser.add_argument("--score-order-metric", choices=("l1", "l2"), default="l1",
+                        help="nn_score distance between normalized Scores")
+    parser.add_argument("--score-context-schedule", choices=("legacy", "quarter2", "dyadic4", "single"), default="legacy")
+    parser.add_argument("--score-spatial-stages", type=int, choices=(1, 2, 3, 4))
+    parser.add_argument("--score-slice-channels", type=int, default=16,
+                        help="channels per entropy stream; 56 encodes all Score channels together")
     parser.add_argument("--score-spatial-kernel", type=int, choices=(3, 5, 7))
     parser.add_argument(
         "--score-context-quantization", choices=("noise", "ste"),
@@ -104,6 +117,14 @@ def parse_args(argv=None):
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if not 1 <= args.score_slice_channels <= 56:
+        parser.error("--score-slice-channels must be between 1 and 56")
+    if args.nn_order_candidates < 1:
+        parser.error("--nn-order-candidates must be positive")
+    if args.nn_order_backend == "legacy" and args.nn_order_distance_device != "cpu":
+        parser.error("legacy NN backend requires --nn-order-distance-device cpu")
+    if args.token_order not in ("nn_xyz", "nn_score") and args.nn_order_backend != "legacy":
+        parser.error("optimized NN backend requires --token-order nn_xyz or nn_score")
     if args.allow_score_path_conversion and (
         args.mode != "train" or args.checkpoint is None or args.resume or args.from_scratch
     ):
@@ -120,14 +141,20 @@ def parse_args(argv=None):
             parser.error("--mean-context requires --centering")
         args.mean_context = False
     if args.score_spatial_stages is None:
-        args.score_spatial_stages = 4 if args.score_context_schedule == "dyadic4" else 2
+        args.score_spatial_stages = {"single": 1, "dyadic4": 4}.get(args.score_context_schedule, 2)
+    if args.score_spatial_stages == 1 and args.score_context_schedule != "single":
+        parser.error("one token stage requires --score-context-schedule single")
+    if args.score_context_schedule == "single" and args.spatial_context:
+        parser.error("single requires --no-spatial-context")
     if args.score_context_schedule != "legacy":
-        expected_stages = 2 if args.score_context_schedule == "quarter2" else 4
+        expected_stages = {"single": 1, "quarter2": 2, "dyadic4": 4}[args.score_context_schedule]
         if args.score_spatial_stages != expected_stages:
             parser.error(f"{args.score_context_schedule} requires {expected_stages} spatial stages")
         if requested_channel_context is True:
             parser.error("anchor schedules require --no-channel-context")
         args.channel_context = False
+    if args.score_order_metric != "l1" and args.token_order != "nn_score":
+        parser.error("--score-order-metric requires --token-order nn_score")
     args.score_order_scale_values = None
     if args.score_order_scale is not None:
         if args.token_order != "nn_score":
@@ -159,8 +186,8 @@ def parse_args(argv=None):
         parser.error("joint training requires train with --scope all")
     if args.mode == "eval" and args.resume:
         parser.error("--resume is only valid for train")
-    if args.mode == "eval" and args.rate_lambda == "0.0128" and args.checkpoint is None:
-        parser.error("lambda 0.0128 has no pretrained FullSplit parent; eval requires --checkpoint")
+    if args.mode == "eval" and args.rate_lambda not in ("0.0064", "0.0256") and args.checkpoint is None:
+        parser.error(f"lambda {args.rate_lambda} has no pretrained FullSplit parent; eval requires --checkpoint")
     if args.mode != "eval" and args.dump_score_context:
         parser.error("--dump-score-context is only valid for eval")
     if args.reset_score_mean_offset and (
@@ -239,15 +266,23 @@ def build_command(args):
         f"model.feature_codec.use_score_norm={str(args.score_norm).lower()}",
         f"model.feature_codec.score_mean_condition={str(args.mean_context).lower()}",
         f"model.feature_codec.score_channel_context={str(args.channel_context).lower()}",
+        f"model.feature_codec.score_spatial_context={str(args.spatial_context).lower()}",
         f"model.feature_codec.transform={'nonlinear' if args.nonlinear else 'linear'}",
         f"model.feature_codec.score_spatial_stages={args.score_spatial_stages}",
+        f"model.feature_codec.score_slice_channels={args.score_slice_channels}",
         f"model.feature_codec.score_spatial_kernel={args.score_spatial_kernel}",
         f"model.feature_codec.score_context_quantization={args.score_context_quantization}",
         f"model.feature_codec.token_order={args.token_order}",
+        f"model.feature_codec.use_morton={str(args.token_order != 'none').lower()}",
+        f"model.feature_codec.nn_order_backend={args.nn_order_backend}",
+        f"model.feature_codec.nn_order_candidates={args.nn_order_candidates}",
+        f"model.feature_codec.nn_order_distance_device={args.nn_order_distance_device}",
         f"model.feature_codec.score_context_schedule={args.score_context_schedule}",
         "model.feature_codec.score_order_scale=" + (json.dumps(args.score_order_scale_values, separators=(",", ":"))
                                                     if args.score_order_scale_values is not None else "null"),
     ]
+    if args.score_order_metric != "l1":
+        command.append(f"model.feature_codec.score_order_metric={args.score_order_metric}")
     if args.mode == "eval":
         command += [
             "mode=test",

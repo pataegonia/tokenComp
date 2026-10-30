@@ -14,6 +14,39 @@ spec.loader.exec_module(runner)
 
 
 class DistributedRunnerTests(unittest.TestCase):
+    def test_both_off_train_and_eval_keep_matched_legacy3_minimal_settings(self):
+        common = ["--checkpoint", "split.ckpt", "--score-path", "minimal",
+                  "--token-order", "none", "--no-spatial-context",
+                  "--score-context-schedule", "legacy", "--score-spatial-stages", "3",
+                  "--score-spatial-kernel", "5", "--score-context-quantization", "ste"]
+        for rate in ("0.0064", "0.0128", "0.0256"):
+            for mode in ("train", "eval"):
+                with self.subTest(rate=rate, mode=mode):
+                    extra = (["--allow-score-path-conversion", "--devices", "2", "--launcher", "srun",
+                              "--batch-size", "2", "--accumulate", "2", "--max-steps", "50000",
+                              "--checkpoint-every", "5000"] if mode == "train" else [])
+                    args = runner.parse_args([mode, *common, "--rate-lambda", rate, *extra])
+                    command, _, _ = runner.build_command(args)
+                    for override in (f"loss.rate_lambda={rate}", "trainer.precision=bf16-mixed",
+                            "model.feature_codec.token_order=none", "model.feature_codec.use_morton=false",
+                            "model.feature_codec.score_spatial_context=false",
+                            "model.feature_codec.use_centering=false", "model.feature_codec.use_score_norm=false",
+                            "model.feature_codec.score_mean_condition=false", "model.feature_codec.score_channel_context=false",
+                            "model.feature_codec.transform=linear", "model.feature_codec.score_context_schedule=legacy",
+                            "model.feature_codec.score_spatial_stages=3", "model.feature_codec.score_spatial_kernel=5",
+                            "model.feature_codec.score_context_quantization=ste"):
+                        self.assertIn(override, command)
+                    if mode == "train":
+                        self.assertEqual(args.devices * args.batch_size * args.accumulate, 8)
+                        for override in ("checkpointing.resume=false", "checkpointing.allow_score_path_conversion=true",
+                                         "trainer.max_steps=50000", "checkpointing.every_n_train_steps=5000",
+                                         "optimizer.lr_milestones=[35000,45000]", "optimizer.lr=0.0001"):
+                            self.assertIn(override, command)
+                    else:
+                        for override in ("dataset=re10k_eval_all_ctx12", "test.actual_bitstream=true",
+                                         "test.max_scenes=null", "optimizer.batch_size=1", "seed=0"):
+                            self.assertIn(override, command)
+
     def test_spatial_stage_cli_and_matched_control(self):
         for stages in (2, 3, 4):
             args = runner.parse_args([

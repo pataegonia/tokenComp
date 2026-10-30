@@ -22,10 +22,12 @@ export PYTHONPATH="${REPO_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONUNBUFFERED=1 HYDRA_FULL_ERROR=1 WANDB_MODE=disabled
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 STEP_TAG="$(printf '%09d' "${MAX_STEPS}")"
-CHECKPOINT="${RUN_ROOT}/job_${TRAIN_JOB_ID}/checkpoints/nfcgs_main/version_0/step${STEP_TAG}.ckpt"
-OUTPUT="${RUN_ROOT}/job_${TRAIN_JOB_ID}/eval_all"
+EVAL_RUN_DIR="${EVAL_RUN_DIR:-${RUN_ROOT}/job_${TRAIN_JOB_ID}}"
+CHECKPOINT="${EVAL_RUN_DIR}/checkpoints/nfcgs_main/version_0/step${STEP_TAG}.ckpt"
+OUTPUT="${EVAL_RUN_DIR}/eval_all"
 [[ -s "${CHECKPOINT}" ]] || { echo "missing checkpoint: ${CHECKPOINT}" >&2; exit 1; }
 python scripts/check_nfcgs_checkpoint.py "${CHECKPOINT}" --step "${MAX_STEPS}"
 echo "TOKEN_ORDER=${TOKEN_ORDER} CONTEXT_SCHEDULE=${CONTEXT_SCHEDULE} CHECKPOINT=${CHECKPOINT} EVAL_OUTPUT=${OUTPUT}"
+echo "NN_BACKEND=${NN_ORDER_BACKEND} NN_DISTANCE_DEVICE=${NN_ORDER_DISTANCE_DEVICE} NN_CANDIDATES=${NN_ORDER_CANDIDATES}"
 exec srun --ntasks=1 python scripts/run_nfcgs.py eval \
   --checkpoint "${CHECKPOINT}" --rate-lambda "${RATE_LAMBDA}" "${CODEC_ARGS[@]}" --output "${OUTPUT}"

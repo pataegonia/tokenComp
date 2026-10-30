@@ -1,0 +1,61 @@
+Source: user-provided terminal output, 2026-10-20 Asia/Seoul.
+
+=== T05 REPORT: outputs/nfcgs_path_diagnostics/job_458004/REPORT.md ===
+# T04/B1 and T05 path diagnostics
+
+Checkpoint: `hilbert_dyadic4_0p0128`; lambda=0.0128; final50k.
+Matched scenes: 256; C12/T8; 256x256; BF16 unless metadata says otherwise.
+
+| Mode | PSNR | SSIM | LPIPS | PSNR - actual | PSNR - B1 | KiB/scene |
+|---|---:|---:|---:|---:|---:|---:|
+| b1_direct | 16.76771 | 0.56521 | 0.48654 | -7.10878 | +0.00000 | n/a |
+| lr_continuous | 19.80692 | 0.60636 | 0.41663 | -4.06957 | +3.03921 | n/a |
+| lr_decoded | 18.56430 | 0.51692 | 0.51549 | -5.31219 | +1.79659 | n/a |
+| score_quantization_bypass | 23.26808 | 0.73005 | 0.27009 | -0.60840 | +6.50037 | n/a |
+| msh_quantization_bypass | 23.92326 | 0.74670 | 0.25720 | +0.04677 | +7.15554 | n/a |
+| both_quantization_bypass | 23.31259 | 0.73187 | 0.26772 | -0.56390 | +6.54488 | n/a |
+| actual_packet | 23.87649 | 0.74468 | 0.25992 | +0.00000 | +7.10878 | 37.2592 |
+
+Paired interventions, not additive independent path contributions. Continuous bypass modes have no packet rate. Hcont retains analysis/synthesis loss. B1 is post-projection, not native GlobalSplat B0. Matched diagnostic subset, not full-test RD.
+
+Repeated actual-path rasterization: {"max_abs_psnr_delta": 0.0, "max_pixel_abs": 0.0}
+
+All paths share encoded F, geometry projection, basis, sorted order, Gaussian decoder and cameras.
+The actual-path decomposition is checked exactly against full packet decoding for every scene.
+Raw packets are in packets/; per-scene frame IDs, fingerprints, feature errors and stream sizes are in scenes/.
+A native B0 evaluation and packet-only independent receiver are separate experiments.
+
+=== B0 REPORT: outputs/nfcgs_b0_matched/job_458024/REPORT.md ===
+# Matched native B0 and current B1 bridge
+
+Scenes: 256; C12/T8; 256x256; see metadata.json for precision and checkpoints.
+
+| Mode | PSNR | SSIM | LPIPS |
+|---|---:|---:|---:|
+| b0_native | 24.90270 | 0.77651 | 0.24100 |
+| b1_bridge | 16.76771 | 0.56521 | 0.48654 |
+| b0_original_slots_check | 24.90270 | 0.77651 | 0.24100 |
+
+Paired mean B1 - B0 PSNR: -8.13499 dB.
+
+B0 uses released native geometry512; B1 uses the current projected geometry224 boundary. Both paths share one encoder output, token order and target cameras within this run. Neither path has a packet rate; this matched subset is not full-test RD or an independent receiver.
+
+Native slot-order check: {"mean_psnr": 24.90269910544157, "mean_ssim": 0.7765118996612728, "mean_lpips": 0.2409969376749359, "mean_psnr_minus_sorted": -2.60770320892334e-07, "max_pixel_abs": 0.01240512728691101, "max_gaussian_abs": {"means": 0.0, "scales": 0.0, "rotations": 0.0, "sh": 0.0, "opacities": 0.0}}
+
+Repeated rasterization: {"b0_native": {"max_pixel_abs": 0.0, "max_abs_psnr_delta": 0.0}, "b1_bridge": {"max_pixel_abs": 0.0, "max_abs_psnr_delta": 0.0}}
+
+The current checkpoint supplies B1/order only. B0 always uses the released native decoder and unprojected geometry.
+No historical 24.7004 dB value is substituted for this measurement.
+
+=== SACCT ===
+JobID|State|ExitCode|Reason|Elapsed|Timelimit|ReqMem|MaxRSS|NodeList
+456951|FAILED|1:0|QOSMaxGRESPerUser|09:26:06|6-00:00:00|96G||ariel-v11
+456951.batch|FAILED|1:0||09:26:06|||320720K|ariel-v11
+456951.extern|COMPLETED|0:0||09:26:06|||0|ariel-v11
+456951.0|CANCELLED|0:9||09:21:37|||9561848K|ariel-v11
+457098|PENDING|0:0|Dependency|00:00:00|1-00:00:00|48G||None assigned
+457099|FAILED|1:0|QOSMaxGRESPerUser|05:32:12|6-00:00:00|96G||ariel-v9
+457099.batch|FAILED|1:0||05:32:12|||318392K|ariel-v9
+457099.extern|COMPLETED|0:0||05:32:12|||0|ariel-v9
+457099.0|CANCELLED|0:9||05:29:44|||9792668K|ariel-v9
+457100|PENDING|0:0|Dependency|00:00:00|1-00:00:00|48G||None assigned

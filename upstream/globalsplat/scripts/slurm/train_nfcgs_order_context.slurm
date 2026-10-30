@@ -14,6 +14,12 @@
 set -euo pipefail
 REPO_DIR="${REPO_DIR:-${SLURM_SUBMIT_DIR:-$(pwd -P)}}"
 cd "${REPO_DIR}"
+# Lightning/fsspec transactions stage checkpoint bytes in tempfile.gettempdir().
+# Use the same short Ceph staging path as the recovery launcher.
+NFCGS_TMP_ROOT="${NFCGS_TMP_ROOT:-/ceph_data/${USER:?missing USER}/.tmp/nfcgs}"
+export TMPDIR="${NFCGS_TMP_ROOT}/job_${SLURM_JOB_ID:?submit with sbatch}"
+mkdir -p -- "${TMPDIR}"
+echo "CHECKPOINT_TMPDIR=${TMPDIR}"
 source scripts/slurm/nfcgs_order_context_settings.sh
 : "${SOURCE_CHECKPOINT:?submit with submit_nfcgs_order_context.sh or set SOURCE_CHECKPOINT}"
 [[ -s "${SOURCE_CHECKPOINT}" ]] || { echo "missing checkpoint: ${SOURCE_CHECKPOINT}" >&2; exit 1; }
@@ -23,7 +29,11 @@ export PYTHONPATH="${REPO_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONUNBUFFERED=1 HYDRA_FULL_ERROR=1 WANDB_MODE=disabled
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 OUTPUT="${RUN_ROOT}/job_${SLURM_JOB_ID:?submit with sbatch}"
-echo "TOKEN_ORDER=${TOKEN_ORDER} CONTEXT_SCHEDULE=${CONTEXT_SCHEDULE} STAGES=${STAGES} KERNEL=${KERNEL}"
+echo "TOKEN_ORDER=${TOKEN_ORDER} SPATIAL_CONTEXT=${SPATIAL_CONTEXT} CONTEXT_SCHEDULE=${CONTEXT_SCHEDULE} STAGES=${STAGES} KERNEL=${KERNEL} SCORE_PATH=minimal"
+echo "NN_BACKEND=${NN_ORDER_BACKEND} NN_DISTANCE_DEVICE=${NN_ORDER_DISTANCE_DEVICE} NN_CANDIDATES=${NN_ORDER_CANDIDATES}"
+if [[ "${NN_ORDER_BACKEND}" == knn ]]; then
+  python -c 'from globalsplat.compression.token_order import _compiled_greedy_knn; _compiled_greedy_knn()'
+fi
 echo "SOURCE_CHECKPOINT=${SOURCE_CHECKPOINT} TRAIN_OUTPUT=${OUTPUT} MAX_STEPS=${MAX_STEPS}"
 echo "GPUS=2 BATCH_PER_GPU=2 ACCUMULATE=2 EFFECTIVE_BATCH=8 LR=0.0001 MSH=on"
 exec python scripts/run_nfcgs.py train --devices 2 --launcher srun \

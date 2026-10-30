@@ -212,10 +212,14 @@ class GlobalSplatModule(pl.LightningModule):
         lr_milestones: Tuple[int, ...] = (),
         lr_gamma: float = 0.1,
         quantile_training: str = "deterministic",
+        override_lr_milestones: bool = False,
+        decoder_lr: Optional[float] = None,
     ):
         super().__init__()
         self.model = model
         self.learning_rate = float(learning_rate)
+        # Separate learning rate for trainable Gaussian decoder readouts only.
+        self.decoder_lr = None if decoder_lr is None else float(decoder_lr)
         self.weight_decay = float(weight_decay)
         self.eval_mode = eval_mode
 
@@ -227,6 +231,7 @@ class GlobalSplatModule(pl.LightningModule):
         self.optimizer_name = str(optimizer_name)
         self.lr_milestones = tuple(int(step) for step in lr_milestones)
         self.lr_gamma = float(lr_gamma)
+        self.override_lr_milestones = bool(override_lr_milestones)
         self.quantile_training = str(quantile_training).lower()
         if self.quantile_training not in {"deterministic", "aux"}:
             raise ValueError("quantile_training must be deterministic or aux")
@@ -296,11 +301,19 @@ class GlobalSplatModule(pl.LightningModule):
             )
 
     def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        if hasattr(self, "fresh_rd_protocol"):
+            checkpoint["fresh_rd_protocol"] = self.fresh_rd_protocol
+            checkpoint["fresh_rd_training_config"] = self.fresh_rd_training_config
+            checkpoint["fresh_rd_quantile_step"] = self._last_quantile_update_step
+            if hasattr(self, "fresh_rd_lr_override"):
+                checkpoint["fresh_rd_lr_override"] = self.fresh_rd_lr_override
+        if hasattr(self, "architecture_pilot_initialization"):
+            checkpoint["architecture_pilot_initialization"] = self.architecture_pilot_initialization
         codec = getattr(self.model, "feature_codec", None)
         if codec is not None:
             checkpoint["feature_codec_config"] = codec.config.to_dict()
             checkpoint["score_mean_offset_enabled"] = (
-                codec.score_context.mean_offset_enabled
+                codec.score_context.mean_offset_enabled if codec.score_context is not None else True
             )
         # Save only the model's own weights. The perceptual-loss VGG and the
         # (optional) LPIPS network under ``render_criterion.*`` are frozen,
@@ -314,6 +327,16 @@ class GlobalSplatModule(pl.LightningModule):
             del sd[key]
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        if getattr(self, "override_lr_milestones", False):
+            from ..fresh_rd_runtime import override_scheduler_milestones
+            self.fresh_rd_lr_override = override_scheduler_milestones(checkpoint, self.lr_milestones)
+        if hasattr(self, "fresh_rd_protocol"):
+            from ..fresh_rd_runtime import checkpoint_protocol_matches
+            if not checkpoint_protocol_matches(checkpoint, self.fresh_rd_protocol):
+                raise ValueError("fresh RD resume protocol differs from the saved run")
+            self._last_quantile_update_step = checkpoint.get("fresh_rd_quantile_step", -1)
+        if "architecture_pilot_initialization" in checkpoint:
+            self.architecture_pilot_initialization = checkpoint["architecture_pilot_initialization"]
         # Re-inject the (identical) perceptual-loss weights that on_save dropped
         # so a strict load during training/resume still succeeds. At eval the
         # module isn't built and strict_loading=False, so any such keys are
@@ -378,6 +401,8 @@ class GlobalSplatModule(pl.LightningModule):
         for stream, stream_bits in output.estimated_bits_by_stream.items():
             terms[f"codec_{stream}_bits"] = stream_bits.detach()
             terms[f"codec_{stream}_bpga"] = (stream_bits / float(denominator)).detach()
+        for name, value in getattr(output, "diagnostics", {}).items():  # Top-K token counts
+            terms[f"codec_{name}"] = value.detach()
         if self.quantile_training == "aux":
             terms["codec_aux_loss"] = codec.aux_loss() * self.codec_aux_loss_weight
         return terms
@@ -872,6 +897,10 @@ class GlobalSplatModule(pl.LightningModule):
         ) = self._load_eval_utils()
         self.benchmarker = Benchmarker()
         self.test_step_outputs = {"psnr": [], "ssim": [], "lpips": []}
+        self.record_scene_metrics = bool(self.test_cfg.get("record_scene_metrics", False))
+        self.test_scene_records = []
+        if self.record_scene_metrics:
+            self.test_step_outputs["mse"] = []
         self.test_rate_records = []
         self.score_context_diagnostic_records = []
         self.actual_bitstream = bool(self.test_cfg.get("actual_bitstream", False))
@@ -886,7 +915,10 @@ class GlobalSplatModule(pl.LightningModule):
         if self.actual_bitstream:
             if codec is None:
                 raise ValueError("test.actual_bitstream=true requires model.feature_codec")
-            codec.score_context.capture_diagnostics = self.score_context_diagnostics
+            if codec.score_context is not None:
+                codec.score_context.capture_diagnostics = self.score_context_diagnostics
+            elif self.score_context_diagnostics:
+                raise ValueError("Score diagnostics require a Score path")
             # Lightning's checkpoint callback runs before our batch-end CDF
             # refresh, so populated tables may lag the saved entropy weights.
             # Rebuild tables from those weights while preserving the saved
@@ -969,7 +1001,8 @@ class GlobalSplatModule(pl.LightningModule):
                     "target_frame_ids": trg["frame_ids"].detach().cpu().reshape(-1).tolist(),
                 }
             )
-            stage_bytes = self.model.feature_codec.score_context.last_compress_stage_bytes
+            score_context = self.model.feature_codec.score_context
+            stage_bytes = score_context.last_compress_stage_bytes if score_context is not None else None
             if stage_bytes is not None:
                 wrapper_bytes = stream_bytes["score"] - sum(stage_bytes.values())
                 if wrapper_bytes < 0:
@@ -1013,10 +1046,21 @@ class GlobalSplatModule(pl.LightningModule):
             self.test_step_outputs["psnr"].append(self._compute_psnr(gt, pred).mean().item())
             self.test_step_outputs["ssim"].append(self._compute_ssim(gt, pred).mean().item())
             self.test_step_outputs["lpips"].append(self._compute_lpips(gt, pred).mean().item())
+            if self.record_scene_metrics:
+                mse_per_image = (gt.float() - pred.float()).square().mean(dim=(1, 2, 3))
+                self.test_step_outputs["mse"].append(mse_per_image.mean().item())
             if compressed is not None:
                 self.test_rate_records[-1].update(
                     {name: scores[-1] for name, scores in self.test_step_outputs.items()}
                 )
+            if self.record_scene_metrics:
+                row = dict(self.test_rate_records[-1]) if compressed is not None else dict(
+                    scene=str(scene), actual_bytes=None,
+                    context_frame_ids=inputs["frame_ids"].detach().cpu().reshape(-1).tolist(),
+                    target_frame_ids=trg["frame_ids"].detach().cpu().reshape(-1).tolist())
+                row.update({name: scores[-1] for name, scores in self.test_step_outputs.items()})
+                row["mse_per_image"] = mse_per_image.detach().cpu().tolist()
+                self.test_scene_records.append(row)
 
     def _test_out_dir(self):
         from pathlib import Path
@@ -1029,6 +1073,9 @@ class GlobalSplatModule(pl.LightningModule):
         out_dir = self._test_out_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
         saved = {}
+        if self.record_scene_metrics:
+            with (out_dir / "scene_metrics.json").open("w") as f:
+                json.dump(self.test_scene_records, f)
 
         if self.test_cfg.get("compute_scores", True):
             for name, scores in self.test_step_outputs.items():
@@ -1298,6 +1345,7 @@ class GlobalSplatModule(pl.LightningModule):
             optimizer_name=self.optimizer_name,
             lr_milestones=self.lr_milestones,
             lr_gamma=self.lr_gamma,
+            lr_overrides=None if self.decoder_lr is None else {"model.gaussian_decoder.": self.decoder_lr},
         )
 
 

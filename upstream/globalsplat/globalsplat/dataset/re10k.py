@@ -47,6 +47,8 @@ def ZPressorRE10KDataModule(
     augment: bool = True,
     scene_scale_factor: float = 1.0,
     resumable_loader: bool = False,
+    train_holdout_manifest: str | None = None,
+    eval_train_holdout_manifest: str | None = None,
     **_ignored,
 ):
     knobs = dict(
@@ -84,4 +86,6 @@ def ZPressorRE10KDataModule(
         prefetch_factor=prefetch_factor,
         scene_scale_factor=scene_scale_factor,
         resumable_loader=resumable_loader,
+        train_holdout_manifest=train_holdout_manifest,
+        eval_train_holdout_manifest=eval_train_holdout_manifest,
     )

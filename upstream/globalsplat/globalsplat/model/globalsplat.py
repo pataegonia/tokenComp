@@ -15,6 +15,7 @@ gsplat renderer consumes directly. The rasterizer itself lives in
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Tuple
 
 import torch
@@ -29,6 +30,15 @@ from ..misc.pose_encoding import PatchViewPE, compute_rays
 
 _RESNET_MEAN = [0.485, 0.456, 0.406]
 _RESNET_STD = [0.229, 0.224, 0.225]
+
+
+@dataclass
+class SelectedCodecOutput:
+    """Rate terms of a Top-K forward; per-scene codec outputs are summed."""
+
+    estimated_bits: torch.Tensor  # includes the κ count surrogate
+    estimated_bits_by_stream: dict
+    diagnostics: dict
 
 
 class GlobalSplat(nn.Module):
@@ -50,6 +60,8 @@ class GlobalSplat(nn.Module):
         freeze_globalsplat: bool = False,
         feature_codec_train_scope: str = "all",
         score_mean_offset_enabled: bool = True,
+        train_decoder_readouts: bool = False,
+        token_selection: Mapping[str, Any] | None = None,
     ):
         super().__init__()
 
@@ -156,17 +168,42 @@ class GlobalSplat(nn.Module):
             self.feature_codec.score_context.mean_offset_enabled = bool(
                 score_mean_offset_enabled
             )
+        self.train_decoder_readouts = bool(train_decoder_readouts)
+        if self.train_decoder_readouts and not self.freeze_globalsplat:
+            raise ValueError("train_decoder_readouts reopens part of a frozen GlobalSplat")
+        # Optional Top-K token selection before the codec (plan §14).
+        self.token_selector = None
+        if token_selection is not None:
+            from ..compression.token_selection import TokenSelector
+
+            if self.feature_codec is None:
+                raise ValueError("token_selection requires feature_codec")
+            options = dict(token_selection)
+            if options.get("order", "slot") == "importance" and self.feature_codec.config.token_order != "none":
+                raise ValueError("importance order passes ranked tokens to a codec with token_order=none")
+            self.token_selector = TokenSelector(2 * self.dim_latents, n_tokens, **options)
         if self.freeze_globalsplat:
             self.freeze_globalsplat_backbone()
 
+    DECODER_READOUTS = ("geo_pos_readout", "geo_param_readout", "sh_readout", "gate_readout")
+
     def freeze_globalsplat_backbone(self) -> None:
-        """Freeze released GlobalSplat weights while leaving the codec trainable."""
+        """Freeze released GlobalSplat weights while leaving the codec trainable.
+
+        With ``train_decoder_readouts`` the four pointwise Gaussian readouts
+        after the split point are trainable too; the encoder stays frozen.
+        """
 
         for parameter in self.parameters():
             parameter.requires_grad_(False)
         if self.feature_codec is None:
             raise ValueError("freeze_globalsplat requires feature_codec")
         self.feature_codec.set_trainable_scope(self.feature_codec_train_scope)
+        if self.train_decoder_readouts:
+            for name in self.DECODER_READOUTS:
+                getattr(self.gaussian_decoder, name).requires_grad_(True)
+        if self.token_selector is not None:
+            self.token_selector.set_trainable(True)
 
     @staticmethod
     def _normalize_patch_size(patch_size: int | Tuple[int, int]) -> Tuple[int, int]:
@@ -235,6 +272,10 @@ class GlobalSplat(nn.Module):
                 "compress_scene_tokens requires a feature_codec configuration"
             )
         appearance, geometry = encoded_patch
+        if self.token_selector is not None:
+            # Only the kept tokens are coded; the header carries their count.
+            kept = self.token_selector(torch.cat([appearance, geometry], -1)).indices[0]
+            appearance, geometry = appearance[:, kept], geometry[:, kept]
         geometry_observable = self.feature_codec.project_geometry(geometry)
         token_centers = self.gaussian_decoder.decoded_token_centers(geometry_observable)
         return self.feature_codec.compress(appearance, geometry, token_centers)
@@ -251,6 +292,38 @@ class GlobalSplat(nn.Module):
     def decode_scene_tokens(self, encoded_patch) -> Gaussians:
         """Convert reconstructed scene tokens into renderable Gaussians."""
         return self._decode_scene_tokens(encoded_patch)
+
+    def _forward_selected(self, encoded_patch) -> Gaussians:
+        """Code each scene's kept tokens, then render all slots with gated opacity.
+
+        Unkept slots keep their uncoded tokens only as a backward surrogate: their
+        forward gate is exactly zero, so the rendered image equals decoding the
+        kept tokens alone.
+        """
+        from ..compression.token_selection import rate_with_count_surrogate
+
+        appearance, geometry = encoded_patch
+        selection = self.token_selector(torch.cat([appearance, geometry], -1))
+        observable = self.feature_codec.project_geometry(geometry)
+        centers = self.gaussian_decoder.decoded_token_centers(observable)
+        textures, geometries, bits, streams = [], [], [], {}
+        for scene, kept in enumerate(selection.indices):
+            output = self.feature_codec(appearance[scene:scene + 1, kept], geometry[scene:scene + 1, kept],
+                                        centers[scene:scene + 1, kept], restore_original_order=True,
+                                        training=self.training)
+            textures.append(appearance[scene].index_copy(0, kept, output.texture[0].to(appearance.dtype)))
+            geometries.append(observable[scene].index_copy(0, kept, output.geometry_observable[0].to(observable.dtype)))
+            bits.append(output.estimated_bits)
+            for name, value in output.estimated_bits_by_stream.items():
+                streams[name] = streams[name] + value if name in streams else value
+        rate = rate_with_count_surrogate(torch.stack(bits), selection.expected_count, selection.selected_count)
+        self.last_codec_output = SelectedCodecOutput(rate.sum(), streams, dict(
+            selected_tokens=selection.selected_count.float().mean(),
+            expected_tokens=selection.expected_count.detach().mean()))
+        gaussians = self._decode_scene_tokens((torch.stack(textures), torch.stack(geometries)))
+        children = gaussians.opacities.shape[1] // selection.gates.shape[1]
+        gate = selection.gates.repeat_interleave(children, 1)[..., None]
+        return replace(gaussians, opacities=gaussians.opacities * gate.to(gaussians.opacities.dtype))
 
     @torch.no_grad()
     def compress_scene(self, inputs):
@@ -278,6 +351,8 @@ class GlobalSplat(nn.Module):
         encoded_patch = self.encode_scene_tokens(inputs)
 
         self.last_codec_output = None
+        if self.token_selector is not None:
+            return self._forward_selected(encoded_patch)
         if self.feature_codec is not None:
             appearance, geometry = encoded_patch
             geometry_observable = self.feature_codec.project_geometry(geometry)

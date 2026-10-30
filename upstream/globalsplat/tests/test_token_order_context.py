@@ -1,5 +1,6 @@
 """Ordering, causal anchors, actual entropy round trips and old checkpoints."""
 import copy
+import importlib.util
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -60,6 +61,40 @@ class TokenOrderContextTests(unittest.TestCase):
         torch.testing.assert_close(order.restore(order.apply(values)), values, rtol=0, atol=0)
         tied = greedy_neighbor_order(torch.zeros_like(values), positions)
         self.assertEqual(tied.permutation.tolist(), [[0, 1, 2, 3]])
+
+    @unittest.skipUnless(importlib.util.find_spec("numba"), "optional numba unavailable")
+    def test_optimized_order_keeps_bytes_and_allows_strict_checkpoint_resume(self):
+        inputs = tuple(torch.randn(1, 65, c) for c in (8, 8, 3))
+        for mode in ("nn_xyz", "nn_score"):
+            original = make_codec("dyadic4", mode).eval()
+            trained_anchors(original)
+            original.update(force=True)
+            checkpoint = {"state_dict": original.state_dict(), "feature_codec_config": original.config.to_dict()}
+            expected = original.compress(*inputs)
+            for backend in ("row", "knn"):
+                requested = replace(original.config, nn_order_backend=backend, nn_order_candidates=2,
+                                    nn_order_distance_device="input")
+                # No architecture conversion or optimizer reset is required.
+                validate_feature_codec_checkpoint(checkpoint, requested)
+                candidate = ObservableLowRank1DCodec(requested).eval()
+                resize_registered_buffers(candidate, original.state_dict())
+                candidate.load_state_dict(original.state_dict(), strict=True)
+                compressed = candidate.compress(*inputs)
+                self.assertEqual(compressed.data, expected.data)
+                torch.testing.assert_close(compressed.order.permutation, expected.order.permutation, rtol=0, atol=0)
+                torch.testing.assert_close(torch.cat(original.decompress(compressed.data), -1),
+                                           candidate(*inputs, training=False).reconstruction_sorted, rtol=1e-5, atol=3e-6)
+                self.assertEqual(infer_config(candidate.state_dict(), requested.to_dict()), requested)
+                optimized_checkpoint = dict(checkpoint, feature_codec_config=requested.to_dict())
+                morton_config = replace(original.config, token_order="morton")
+                with self.assertRaisesRegex(ValueError, "configuration mismatch"):
+                    validate_feature_codec_checkpoint(optimized_checkpoint, morton_config)
+                validate_feature_codec_checkpoint(optimized_checkpoint, morton_config,
+                                                  allow_score_path_conversion=True)
+            old_metadata = original.config.to_dict()
+            for key in ("nn_order_backend", "nn_order_candidates", "nn_order_distance_device"):
+                old_metadata.pop(key)
+            self.assertEqual(infer_config(original.state_dict(), old_metadata), original.config)
 
     def test_new_partitions_keep_all_tokens(self):
         expected = {

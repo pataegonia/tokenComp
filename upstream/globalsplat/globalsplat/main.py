@@ -54,9 +54,13 @@ def _quiet_upstream_logs(cfg: DictConfig) -> None:
     if not bool(cfg.get("quiet_skipped_examples", True)):
         return
     import builtins
+    from functools import wraps
 
     _orig = builtins.print
 
+    # Numba can first import after this patch. Its builtin registry resolves
+    # print via __module__/__name__, so retain the reachable builtins.print name.
+    @wraps(_orig)
     def _filtered(*args, **kwargs):
         if args and isinstance(args[0], str) and args[0].startswith("Skipped bad example"):
             return
@@ -221,6 +225,8 @@ def build_datamodule(cfg: DictConfig):
         from globalsplat.dataset.re10k import ZPressorRE10KDataModule, ZPressorStepTrackerCallback
         dm = ZPressorRE10KDataModule(
             mvsplat_root=ds.mvsplat_root,
+            train_holdout_manifest=ds.get("train_holdout_manifest", None),
+            eval_train_holdout_manifest=ds.get("eval_train_holdout_manifest", None),
             near=ds.near, far=ds.far,
             make_baseline_1=ds.make_baseline_1,
             baseline_scale_bounds=ds.baseline_scale_bounds,
@@ -264,6 +270,8 @@ def build_module(cfg: DictConfig, eval_mode: bool) -> GlobalSplatModule:
         lr_milestones=tuple(cfg.optimizer.get("lr_milestones", [])),
         lr_gamma=cfg.optimizer.get("lr_gamma", 0.1),
         quantile_training=cfg.optimizer.get("quantile_training", "deterministic"),
+        override_lr_milestones=cfg.checkpointing.get("override_lr_milestones", False),
+        decoder_lr=cfg.optimizer.get("decoder_lr", None),
     )
 
 
@@ -274,6 +282,12 @@ def main(cfg: DictConfig) -> None:
     rank_zero_print(OmegaConf.to_yaml(cfg))
 
     is_test = str(cfg.mode) == "test"
+    if cfg.get("architecture_entropy_determinism", False):
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.set_float32_matmul_precision("highest")
     if cfg.checkpointing.get("allow_score_path_conversion", False) and (
         is_test or cfg.checkpointing.get("resume", False)
         or not cfg.checkpointing.get("load")
@@ -287,6 +301,10 @@ def main(cfg: DictConfig) -> None:
         # conv-speed difference is negligible here.
         torch.backends.cudnn.benchmark = False
     lit = build_module(cfg, eval_mode=is_test)
+    fresh_manifest = cfg.get("fresh_rd_manifest", None)
+    if fresh_manifest:
+        lit.fresh_rd_protocol = json.loads(Path(fresh_manifest).read_text(encoding="utf-8"))
+        lit.fresh_rd_training_config = OmegaConf.to_container(cfg, resolve=True)
     datamodule, step_tracker_cb = build_datamodule(cfg)
 
     # Versioned run dirs: each run lands in <root>/<exp>/version_<N>/ (checkpoints)
@@ -314,7 +332,16 @@ def main(cfg: DictConfig) -> None:
         default_hp_metric=False,
     )
 
-    ckpt_cb = ModelCheckpoint(
+    checkpoint_class = ModelCheckpoint
+    extra_callbacks = []
+    if fresh_manifest and not is_test:
+        from globalsplat.fresh_rd_runtime import FreshRDCheckpoint, FreshRDState
+        checkpoint_class = FreshRDCheckpoint
+        extra_callbacks.append(FreshRDState(cfg.get("fresh_rd_audit_trace", None)))
+    if cfg.checkpointing.get("record_lr", False) and not is_test:
+        from pytorch_lightning.callbacks import LearningRateMonitor
+        extra_callbacks.append(LearningRateMonitor(logging_interval="step"))
+    ckpt_cb = checkpoint_class(
         dirpath=(run.ckpt_dir if run is not None else exp_ckpt_base),
         filename="step{step:09d}",
         auto_insert_metric_name=False,
@@ -338,7 +365,7 @@ def main(cfg: DictConfig) -> None:
         max_steps=tr.max_steps,
         max_epochs=-1,
         enable_checkpointing=not is_test,
-        callbacks=[step_tracker_cb] + ([] if is_test else [ckpt_cb, GsplatWarmupCallback()]),
+        callbacks=[step_tracker_cb] + extra_callbacks + ([] if is_test else [ckpt_cb, GsplatWarmupCallback()]),
         check_val_every_n_epoch=tr.check_val_every_n_epoch,
         limit_val_batches=tr.limit_val_batches,
         # Make the test progress-bar total match the scenes actually evaluated
@@ -394,6 +421,8 @@ def main(cfg: DictConfig) -> None:
     # Training: resolve resume vs weights-only load (version-aware).
     if run.weights_only is not None:
         state = torch.load(run.weights_only, map_location="cpu")
+        if "architecture_pilot_initialization" in state:
+            lit.architecture_pilot_initialization = state["architecture_pilot_initialization"]
         state_dict = state.get("state_dict", state)
         if getattr(lit.model, "feature_codec", None) is not None:
             from globalsplat.compression import resize_registered_buffers
@@ -417,7 +446,9 @@ def main(cfg: DictConfig) -> None:
                     cfg.checkpointing.get("allow_score_mean_offset_conversion", False)
                 ),
             )
-            if cfg.checkpointing.get("allow_score_path_conversion", False):
+            # Single-path conversions change only switches; their tensors load as-is.
+            if (cfg.checkpointing.get("allow_score_path_conversion", False)
+                    and lit.model.feature_codec.config.codec_mode == "two_path"):
                 state_dict = convert_score_path_state(state_dict, lit.model.feature_codec)
             resize_registered_buffers(lit, state_dict)
         missing, unexpected = lit.load_state_dict(state_dict, strict=False)

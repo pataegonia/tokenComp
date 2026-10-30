@@ -23,7 +23,7 @@ class MainRunnerTests(unittest.TestCase):
     def composed(self, args):
         command, _, _ = runner.build_command(args)
         with initialize_config_dir(config_dir=str(ROOT / "config"), version_base=None):
-            return compose(config_name="main", overrides=command[3:])
+            return compose(config_name="main", overrides=command[command.index("globalsplat.main") + 1:])
 
     def test_eval_both_rates_resolve_main_checkpoints_and_actual_protocol(self):
         for rate in ("0.0064", "0.0256"):
@@ -58,6 +58,56 @@ class MainRunnerTests(unittest.TestCase):
                 self.assertIsNone(config.test.max_scenes)
         with self.assertRaises(SystemExit):
             runner.parse_args(["eval", "--rate-lambda", "0.0128"])
+
+    def test_rd_extension_rates_and_single_stream_control_compose(self):
+        arms = (("hilbert", "dyadic4", 4, 16, True), ("morton", "dyadic4", 4, 16, True),
+                ("hilbert", "legacy", 3, 16, True), ("morton", "legacy", 3, 16, True),
+                ("none", "dyadic4", 4, 16, True), ("hilbert", "single", 1, 56, False))
+        points = [(arm, rate) for arm in arms for rate in ("0.0032", "0.0512")]
+        points.append((arms[0], "0"))
+        for (order, schedule, stages, channels, context), rate in points:
+            for mode in ("train", "eval"):
+                argv = [mode, "--checkpoint", "rd.ckpt", "--rate-lambda", rate,
+                        "--score-path", "minimal", "--token-order", order,
+                        "--score-context-schedule", schedule, "--score-spatial-stages", str(stages),
+                        "--score-spatial-kernel", "5", "--score-context-quantization", "ste",
+                        "--score-slice-channels", str(channels)]
+                if not context:
+                    argv.append("--no-spatial-context")
+                if mode == "train":
+                    argv += ["--allow-score-path-conversion", "--devices", "2", "--launcher", "srun",
+                             "--batch-size", "2", "--accumulate", "2", "--max-steps", "50000"]
+                cfg = self.composed(runner.parse_args(argv))
+                codec = CodecConfig.from_mapping(cfg.model.feature_codec)
+                self.assertEqual(cfg.loss.rate_lambda, float(rate))
+                self.assertEqual(codec.token_order, order)
+                self.assertEqual(codec.score_context_schedule, schedule)
+                self.assertEqual(codec.score_spatial_stages, stages)
+                self.assertEqual(codec.score_slice_channels, channels)
+                self.assertEqual(codec.score_spatial_context, context)
+                self.assertTrue(codec.use_residual)
+                self.assertFalse(codec.use_centering)
+                self.assertFalse(codec.use_score_norm)
+                self.assertFalse(codec.score_mean_condition)
+                self.assertFalse(codec.score_channel_context)
+                self.assertTrue(cfg.model.freeze_globalsplat)
+                if mode == "train":
+                    self.assertEqual(cfg.trainer.max_steps, 50000)
+                    self.assertFalse(cfg.checkpointing.resume)
+                    self.assertTrue(cfg.checkpointing.allow_score_path_conversion)
+                    self.assertEqual(cfg.optimizer.batch_size*cfg.trainer.devices*cfg.trainer.accumulate_grad_batches, 8)
+                    self.assertEqual(list(cfg.optimizer.lr_milestones), [35000, 45000])
+                    self.assertEqual(cfg.loss.quantile_update_interval, 500)
+                else:
+                    self.assertTrue(cfg.test.actual_bitstream)
+                    self.assertIsNone(cfg.test.max_scenes)
+                    self.assertEqual(cfg.optimizer.batch_size, 1)
+        for rate in ("0", "0.0032", "0.0512"):
+            with self.assertRaises(SystemExit):
+                runner.parse_args(["eval", "--rate-lambda", rate])
+        for rate in ("-0.0032", "nan", "inf", "0.1"):
+            with self.assertRaises(SystemExit):
+                runner.parse_args(["train", "--checkpoint", "rd.ckpt", "--rate-lambda", rate])
 
     def test_training_scopes_keep_recipe_and_explicit_resume(self):
         for scope in ("all", "score_probability"):
@@ -158,6 +208,73 @@ class MainRunnerTests(unittest.TestCase):
     def test_training_requires_explicit_checkpoint(self):
         with self.assertRaises(SystemExit):
             runner.parse_args(["train"])
+
+    def test_context_off_uses_one_or_four_full_channel_streams_in_train_and_eval(self):
+        for mode in ("train","eval"):
+            for schedule,stages in (("single",1),("dyadic4",4)):
+                with self.subTest(mode=mode,schedule=schedule):
+                    argv=[mode,"--checkpoint","parent.ckpt","--score-path","minimal",
+                        "--token-order","hilbert","--no-spatial-context","--score-context-schedule",schedule,
+                        "--score-slice-channels","56","--score-spatial-kernel","5"]
+                    if mode=="train":
+                        argv.append("--allow-score-path-conversion")
+                    cfg=self.composed(runner.parse_args(argv))
+                    codec=CodecConfig.from_mapping(cfg.model.feature_codec)
+                    self.assertEqual(codec.score_spatial_stages,stages)
+                    self.assertEqual(codec.score_slice_channels,56)
+                    self.assertFalse(codec.score_spatial_context)
+                    self.assertFalse(codec.score_channel_context)
+                    self.assertTrue(codec.use_residual)
+                    self.assertEqual(codec.token_order,"hilbert")
+        for args in (["--score-context-schedule","single"], ["--score-spatial-stages","1"],
+                     ["--score-slice-channels","0"],["--score-slice-channels","57"]):
+            with self.assertRaises(SystemExit):
+                runner.parse_args(["eval","--score-path","minimal",*args])
+
+    def test_sorting_and_spatial_context_can_be_disabled_independently(self):
+        for order, enabled, schedule, stages in (("none", True, "legacy", 3), ("hilbert", False, "legacy", 3),
+                                                  ("none", True, "quarter2", 2), ("none", True, "dyadic4", 4)):
+            for mode in ("train", "eval"):
+                with self.subTest(order=order, mode=mode, schedule=schedule):
+                    argv = [mode, "--checkpoint", "parent.ckpt", "--score-path", "minimal",
+                            "--token-order", order, "--score-context-schedule", schedule,
+                            "--score-spatial-stages", str(stages),
+                            "--score-spatial-kernel", "5", "--score-context-quantization", "ste"]
+                    if not enabled:
+                        argv.append("--no-spatial-context")
+                    if mode == "train":
+                        argv.append("--allow-score-path-conversion")
+                    composed = self.composed(runner.parse_args(argv))
+                    codec = CodecConfig.from_mapping(composed.model.feature_codec)
+                    self.assertEqual(codec.token_order, order)
+                    self.assertEqual(codec.use_morton, order != "none")
+                    self.assertEqual(codec.score_spatial_context, enabled)
+                    self.assertEqual(codec.score_context_schedule, schedule)
+                    self.assertEqual(codec.score_spatial_stages, stages)
+                    self.assertFalse(codec.score_mean_condition)
+                    self.assertFalse(codec.score_channel_context)
+                    self.assertTrue(codec.use_residual)
+                    self.assertEqual(codec.score_spatial_entropy, "split")
+
+    def test_nn_implementation_compose_and_resume_without_score_conversion(self):
+        for mode in ("train", "eval"):
+            argv = [mode, "--checkpoint", "nn.ckpt", "--token-order", "nn_score",
+                    "--score-path", "minimal", "--nn-order-backend", "knn",
+                    "--nn-order-candidates", "65", "--nn-order-distance-device", "input"]
+            if mode == "train":
+                argv.append("--resume")
+            config = self.composed(runner.parse_args(argv))
+            codec = CodecConfig.from_mapping(config.model.feature_codec)
+            self.assertEqual(codec.nn_order_backend, "knn")
+            self.assertEqual(codec.nn_order_candidates, 65)
+            self.assertEqual(codec.nn_order_distance_device, "input")
+            self.assertFalse(config.checkpointing.allow_score_path_conversion)
+            if mode == "train":
+                self.assertTrue(config.checkpointing.resume)
+        for extra in (["--nn-order-candidates", "0"], ["--nn-order-backend", "knn"],
+                      ["--nn-order-distance-device", "input"]):
+            with self.assertRaises(SystemExit):
+                runner.parse_args(["eval", *extra])
 
     def test_order_and_anchor_switches_compose_independently(self):
         for order in ("morton", "hilbert", "nn_xyz", "nn_score"):
